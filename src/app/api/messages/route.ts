@@ -1,28 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
+
 import { createClient } from "@/lib/supabase/server";
 
-/**
- * GET /api/messages
- *
- * Search and list messages with filtering and pagination.
- *
- * Query params:
- *   - channel_id: UUID - filter by channel
- *   - status: string - filter by status (received, transformed, filtered, sent, queued, error, pending)
- *   - direction: string - filter by direction (inbound, outbound)
- *   - limit: number - max results (default 50, max 200)
- *   - offset: number - pagination offset (default 0)
- *   - from_date: ISO string - messages created after this date
- *   - to_date: ISO string - messages created before this date
- *   - connector_name: string - filter by connector name
- *   - message_type: string - filter by message type
- */
+function isUuid(value: string) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
 export async function GET(request: NextRequest) {
   try {
     const supabase = await createClient();
     const { searchParams } = new URL(request.url);
 
-    const channelId = searchParams.get("channel_id");
+    const channelFilter = searchParams.get("channel_id");
     const status = searchParams.get("status");
     const direction = searchParams.get("direction");
     const limit = Math.min(parseInt(searchParams.get("limit") || "50", 10), 200);
@@ -32,18 +21,44 @@ export async function GET(request: NextRequest) {
     const connectorName = searchParams.get("connector_name");
     const messageType = searchParams.get("message_type");
 
-    // Build query
+    let resolvedChannelId: string | null = null;
+    if (channelFilter) {
+      if (isUuid(channelFilter)) {
+        resolvedChannelId = channelFilter;
+      } else {
+        const { data: channel } = await supabase
+          .from("channels")
+          .select("id")
+          .eq("channel_id", channelFilter)
+          .maybeSingle();
+
+        if (!channel) {
+          return NextResponse.json({
+            messages: [],
+            pagination: {
+              total: 0,
+              limit,
+              offset,
+              hasMore: false,
+            },
+          });
+        }
+
+        resolvedChannelId = channel.id;
+      }
+    }
+
     let query = supabase
       .from("messages")
       .select(
-        "id, channel_id, connector_name, message_id, status, message_type, data_type, direction, processing_time_ms, created_at, error_content",
-        { count: "exact" }
+        "id, channel_id, connector_name, message_id, status, message_type, message_format, data_type, direction, processing_time_ms, created_at, error_content, source_system, destination_system",
+        { count: "exact" },
       )
       .order("created_at", { ascending: false })
       .range(offset, offset + limit - 1);
 
-    if (channelId) {
-      query = query.eq("channel_id", channelId);
+    if (resolvedChannelId) {
+      query = query.eq("channel_id", resolvedChannelId);
     }
     if (status) {
       query = query.eq("status", status);
@@ -69,12 +84,29 @@ export async function GET(request: NextRequest) {
     if (error) {
       return NextResponse.json(
         { error: `Failed to fetch messages: ${error.message}` },
-        { status: 500 }
+        { status: 500 },
       );
     }
 
+    const uniqueChannelIds = [...new Set((messages || []).map((message) => message.channel_id).filter(Boolean))];
+    const channelMap = new Map<string, { channel_id: string; name: string }>();
+
+    if (uniqueChannelIds.length > 0) {
+      const { data: channels } = await supabase
+        .from("channels")
+        .select("id, channel_id, name")
+        .in("id", uniqueChannelIds);
+
+      (channels || []).forEach((channel) => {
+        channelMap.set(channel.id, { channel_id: channel.channel_id, name: channel.name });
+      });
+    }
+
     return NextResponse.json({
-      messages: messages || [],
+      messages: (messages || []).map((message) => ({
+        ...message,
+        channel: message.channel_id ? channelMap.get(message.channel_id) ?? null : null,
+      })),
       pagination: {
         total: count || 0,
         limit,
@@ -87,7 +119,7 @@ export async function GET(request: NextRequest) {
     console.error("Messages list error:", errorMessage);
     return NextResponse.json(
       { error: `Internal server error: ${errorMessage}` },
-      { status: 500 }
+      { status: 500 },
     );
   }
 }

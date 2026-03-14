@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
+
+import { requireRole } from "@/lib/authz";
 import { processMessage } from "@/lib/engine/pipeline";
 
 /**
@@ -10,72 +11,72 @@ import { processMessage } from "@/lib/engine/pipeline";
  */
 export async function POST(
   request: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
+  { params }: { params: Promise<{ id: string }> },
 ) {
   try {
     const { id: messageId } = await params;
-    const supabase = await createClient();
+    const access = await requireRole(["admin", "engineer"]);
+    if (!access.ok) {
+      return NextResponse.json({ error: access.message }, { status: access.status });
+    }
 
-    // Fetch the original message
+    const { supabase } = access;
+
     const { data: originalMessage, error: fetchError } = await supabase
       .from("messages")
-      .select("id, channel_id, raw_content, status")
-      .eq("id", messageId)
+      .select("id, message_id, channel_id, raw_content, raw_payload, status, custom_metadata")
+      .or(`id.eq.${messageId},message_id.eq.${messageId}`)
       .single();
 
     if (fetchError || !originalMessage) {
       return NextResponse.json(
         { error: `Message not found: ${messageId}` },
-        { status: 404 }
+        { status: 404 },
       );
     }
 
-    if (!originalMessage.raw_content) {
+    const rawContent = originalMessage.raw_content || originalMessage.raw_payload;
+
+    if (!rawContent) {
       return NextResponse.json(
         { error: "Original message has no raw content to reprocess." },
-        { status: 422 }
+        { status: 422 },
       );
     }
 
     if (!originalMessage.channel_id) {
       return NextResponse.json(
         { error: "Original message has no associated channel." },
-        { status: 422 }
+        { status: 422 },
       );
     }
 
-    // Verify channel still exists
     const { data: channel, error: channelError } = await supabase
       .from("channels")
       .select("id, name, enabled")
-      .eq("id", originalMessage.channel_id)
+      .or(`id.eq.${originalMessage.channel_id},channel_id.eq.${originalMessage.channel_id}`)
       .single();
 
     if (channelError || !channel) {
       return NextResponse.json(
         { error: `Original channel no longer exists: ${originalMessage.channel_id}` },
-        { status: 404 }
+        { status: 404 },
       );
     }
 
-    // Reprocess through the pipeline
-    const result = await processMessage(
-      originalMessage.channel_id,
-      originalMessage.raw_content,
-      supabase
-    );
+    const result = await processMessage(channel.id, rawContent, supabase);
 
-    // Update original message status to indicate it was reprocessed
     await supabase
       .from("messages")
       .update({
         custom_metadata: {
+          ...(originalMessage.custom_metadata ?? {}),
           reprocessed: true,
           reprocessedAt: new Date().toISOString(),
           newMessageId: result.messageId,
         },
       })
-      .eq("id", messageId);
+      .eq("id", originalMessage.id);
 
     return NextResponse.json({
       success: result.status !== "error",
@@ -87,7 +88,7 @@ export async function POST(
     console.error("Reprocess error:", errorMessage);
     return NextResponse.json(
       { error: `Internal server error: ${errorMessage}` },
-      { status: 500 }
+      { status: 500 },
     );
   }
 }

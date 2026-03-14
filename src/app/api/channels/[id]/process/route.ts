@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
+
+import { requireRole } from "@/lib/authz";
 import { processMessage } from "@/lib/engine/pipeline";
 
 /**
@@ -11,7 +12,7 @@ import { processMessage } from "@/lib/engine/pipeline";
  */
 export async function POST(
   request: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
+  { params }: { params: Promise<{ id: string }> },
 ) {
   try {
     const { id: channelId } = await params;
@@ -21,42 +22,45 @@ export async function POST(
     if (!message || typeof message !== "string") {
       return NextResponse.json(
         { error: "Missing or invalid 'message' field. Must be a non-empty string." },
-        { status: 400 }
+        { status: 400 },
       );
     }
 
     if (!channelId) {
       return NextResponse.json(
         { error: "Missing channel ID." },
-        { status: 400 }
+        { status: 400 },
       );
     }
 
-    const supabase = await createClient();
+    const access = await requireRole(["admin", "engineer"]);
+    if (!access.ok) {
+      return NextResponse.json({ error: access.message }, { status: access.status });
+    }
 
-    // Verify channel exists
+    const { supabase } = access;
+
     const { data: channel, error: channelError } = await supabase
       .from("channels")
       .select("id, name, enabled")
-      .eq("id", channelId)
+      .or(`id.eq.${channelId},channel_id.eq.${channelId}`)
       .single();
 
     if (channelError || !channel) {
       return NextResponse.json(
         { error: `Channel not found: ${channelId}` },
-        { status: 404 }
+        { status: 404 },
       );
     }
 
     if (channel.enabled === false) {
       return NextResponse.json(
         { error: `Channel '${channel.name}' is disabled.` },
-        { status: 422 }
+        { status: 422 },
       );
     }
 
-    // Process message through the pipeline
-    const result = await processMessage(channelId, message, supabase);
+    const result = await processMessage(channel.id, message, supabase);
 
     return NextResponse.json({
       success: result.status !== "error",
@@ -67,7 +71,7 @@ export async function POST(
     console.error("Channel process error:", errorMessage);
     return NextResponse.json(
       { error: `Internal server error: ${errorMessage}` },
-      { status: 500 }
+      { status: 500 },
     );
   }
 }

@@ -1,9 +1,8 @@
-﻿import { createServerClient } from "@supabase/ssr";
+import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 
 import { env } from "@/lib/env";
-
-const authOnlyRoutes = new Set(["/login", "/signup"]);
+import { canAccessPath, isAuthOnlyRoute, isProtectedAppRoute, normalizeRole } from "@/lib/rbac";
 
 export async function updateSession(request: NextRequest) {
   let response = NextResponse.next({ request });
@@ -31,12 +30,26 @@ export async function updateSession(request: NextRequest) {
 
   const path = request.nextUrl.pathname;
 
-  if (!user && (path.startsWith("/dashboard") || path.startsWith("/channels") || path.startsWith("/messages") || path.startsWith("/connectors") || path.startsWith("/monitoring") || path.startsWith("/errors") || path.startsWith("/audit"))) {
+  if (!user && isProtectedAppRoute(path)) {
     return NextResponse.redirect(new URL("/login", request.url));
   }
 
-  if (user && authOnlyRoutes.has(path)) {
+  if (user && isAuthOnlyRoute(path)) {
     return NextResponse.redirect(new URL("/dashboard", request.url));
+  }
+
+  if (user && !canAccessPath("viewer", path)) {
+    const { data: profile } = await supabase
+      .from("profiles")
+      .select("role")
+      .eq("id", user.id)
+      .maybeSingle();
+
+    const role = normalizeRole(profile?.role);
+
+    if (!canAccessPath(role, path)) {
+      return NextResponse.redirect(new URL("/dashboard?denied=role", request.url));
+    }
   }
 
   return response;

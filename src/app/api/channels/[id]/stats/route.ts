@@ -19,7 +19,7 @@ export async function GET(
     const { data: channel, error: channelError } = await supabase
       .from("channels")
       .select("id, name")
-      .eq("id", channelId)
+      .or(`id.eq.${channelId},channel_id.eq.${channelId}`)
       .single();
 
     if (channelError || !channel) {
@@ -33,7 +33,7 @@ export async function GET(
     const { data: messages, error: messagesError } = await supabase
       .from("messages")
       .select("status, processing_time_ms, direction, created_at")
-      .eq("channel_id", channelId);
+      .eq("channel_id", channel.id);
 
     if (messagesError) {
       return NextResponse.json(
@@ -88,7 +88,7 @@ export async function GET(
     ).length;
 
     return NextResponse.json({
-      channelId,
+      channelId: channel.id,
       channelName: channel.name,
       totalMessages: allMessages.length,
       statusCounts,

@@ -1,215 +1,291 @@
 @import "tailwindcss";
 
-/* ── HealthBridge Design System — Light Clinical Theme ──────────────────── */
-/* Aesthetic: "Clinical Precision" — clean, medical-grade white with teal accents */
-
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
+  --color-ink: var(--ink);
+  --color-muted: var(--muted);
+  --color-teal: var(--teal);
+  --color-mint: var(--mint);
+  --color-gold: var(--gold);
+  --color-alert: var(--alert);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
   --font-sans: var(--font-ibm-plex);
   --font-mono: var(--font-jetbrains);
 }
 
 :root {
-  /* Core palette — clean whites with clinical depth */
-  --background: #ffffff;
-  --foreground: #0f172a;
-  --hb-white: #ffffff;
-  --hb-snow: #f8fafc;
-  --hb-cloud: #f1f5f9;
-  --hb-mist: #e2e8f0;
-  --hb-surface: #ffffff;
-  --hb-elevated: #f8fafc;
-  --hb-deep: #f1f5f9;
-  --hb-obsidian: #f8fafc;
-  --hb-panel: #ffffff;
-  --hb-border: #e2e8f0;
-  --hb-border-subtle: #f1f5f9;
-  --hb-border-bright: #cbd5e1;
+  --font-ibm-plex: 'Aptos', 'Segoe UI Variable', 'Segoe UI', 'Helvetica Neue', sans-serif;
+  --font-jetbrains: 'Cascadia Code', 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+  --background: #f4efe7;
+  --foreground: #11202a;
+  --ink: #11202a;
+  --muted: #5c6a73;
+  --teal: #0f6d69;
+  --mint: #79d3c4;
+  --gold: #b6842f;
+  --alert: #cf6a41;
+  --line: #d8dfda;
+  --line-strong: #c3cdc7;
+  --surface: rgba(255, 252, 246, 0.84);
+  --surface-strong: rgba(255, 252, 246, 0.94);
+  --surface-dark: #17303a;
+  --shadow-soft: 0 24px 80px rgba(17, 32, 42, 0.1);
+  --shadow-strong: 0 24px 60px rgba(17, 32, 42, 0.16);
 
-  /* Clinical accent — teal/emerald spectrum */
-  --hb-teal: #0d9488;
-  --hb-teal-dim: #0f766e;
-  --hb-teal-light: #14b8a6;
-  --hb-teal-glow: rgba(13, 148, 136, 0.1);
-  --hb-teal-ghost: rgba(13, 148, 136, 0.05);
-  --hb-cyan: #06b6d4;
-  --hb-blue: #3b82f6;
-  --hb-blue-dim: #2563eb;
+  /* Legacy aliases kept so older classes still render correctly. */
+  --hb-white: #fffaf3;
+  --hb-snow: #f4efe7;
+  --hb-cloud: #ede6dc;
+  --hb-mist: #d8dfda;
+  --hb-surface: var(--surface);
+  --hb-elevated: var(--surface-strong);
+  --hb-deep: #e7ece8;
+  --hb-obsidian: #1a313b;
+  --hb-panel: var(--surface-strong);
+  --hb-border: var(--line);
+  --hb-border-subtle: rgba(17, 32, 42, 0.06);
+  --hb-border-bright: var(--line-strong);
+  --hb-teal: var(--teal);
+  --hb-teal-dim: #0a5955;
+  --hb-teal-light: #1d968d;
+  --hb-teal-glow: rgba(15, 109, 105, 0.16);
+  --hb-teal-ghost: rgba(15, 109, 105, 0.08);
+  --hb-cyan: #2d9db3;
+  --hb-blue: #3b6f9c;
+  --hb-blue-dim: #24557c;
+  --hb-green: #29795f;
+  --hb-green-light: #3a987a;
+  --hb-amber: var(--gold);
+  --hb-amber-light: #d2a04a;
+  --hb-red: var(--alert);
+  --hb-red-light: #e18a68;
+  --hb-text-primary: var(--ink);
+  --hb-text-secondary: var(--muted);
+  --hb-text-tertiary: #7c8a91;
+  --hb-text-ghost: #9aa7ad;
+}
 
-  /* Status colors */
-  --hb-green: #059669;
-  --hb-green-light: #10b981;
-  --hb-amber: #d97706;
-  --hb-amber-light: #f59e0b;
-  --hb-red: #dc2626;
-  --hb-red-light: #ef4444;
+* {
+  box-sizing: border-box;
+}
 
-  /* Text hierarchy */
-  --hb-text-primary: #0f172a;
-  --hb-text-secondary: #475569;
-  --hb-text-tertiary: #64748b;
-  --hb-text-ghost: #94a3b8;
+html {
+  min-height: 100%;
+  background:
+    radial-gradient(circle at top left, rgba(121, 211, 196, 0.22), transparent 34%),
+    radial-gradient(circle at right 18%, rgba(182, 132, 47, 0.16), transparent 30%),
+    linear-gradient(180deg, #f8f4ec 0%, #f1ebe1 100%);
 }
 
 body {
-  background: var(--hb-snow);
+  min-height: 100vh;
   color: var(--foreground);
   font-family: var(--font-sans), system-ui, sans-serif;
+  background:
+    radial-gradient(circle at 12% 18%, rgba(121, 211, 196, 0.14), transparent 18%),
+    radial-gradient(circle at 84% 12%, rgba(182, 132, 47, 0.11), transparent 18%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.18) 0%, rgba(255, 255, 255, 0) 32%),
+    transparent;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* ── Grid texture overlay ───────────────────────────────────────────────── */
+a,
+button,
+input,
+textarea,
+select {
+  transition:
+    background-color 0.2s ease,
+    border-color 0.2s ease,
+    color 0.2s ease,
+    box-shadow 0.2s ease,
+    transform 0.2s ease;
+}
+
+.display-face {
+  font-family: var(--font-sans), system-ui, sans-serif;
+  font-weight: 700;
+  letter-spacing: -0.04em;
+}
+
+.app-grid {
+  position: relative;
+  isolation: isolate;
+}
+
+.app-grid::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  background-image:
+    linear-gradient(rgba(17, 32, 42, 0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(17, 32, 42, 0.025) 1px, transparent 1px);
+  background-size: 36px 36px;
+  mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.72), transparent 96%);
+}
+
+.glass {
+  background: linear-gradient(180deg, rgba(255, 252, 246, 0.88), rgba(255, 250, 244, 0.74));
+  backdrop-filter: blur(20px) saturate(1.1);
+  -webkit-backdrop-filter: blur(20px) saturate(1.1);
+  box-shadow: var(--shadow-soft);
+}
+
+.page-loader-shimmer {
+  background:
+    linear-gradient(
+      90deg,
+      rgba(17, 32, 42, 0.05) 0%,
+      rgba(17, 32, 42, 0.09) 50%,
+      rgba(17, 32, 42, 0.05) 100%
+    );
+  background-size: 220% 100%;
+  animation: shimmer 1.6s linear infinite;
+}
+
 .hb-grid-bg {
   background-image:
-    linear-gradient(rgba(13, 148, 136, 0.02) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(13, 148, 136, 0.02) 1px, transparent 1px);
+    linear-gradient(rgba(17, 32, 42, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(17, 32, 42, 0.03) 1px, transparent 1px);
   background-size: 32px 32px;
 }
 
 .hb-grid-bg-dense {
   background-image:
-    linear-gradient(rgba(13, 148, 136, 0.03) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(13, 148, 136, 0.03) 1px, transparent 1px);
+    linear-gradient(rgba(17, 32, 42, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(17, 32, 42, 0.04) 1px, transparent 1px);
   background-size: 16px 16px;
 }
 
-/* ── Glow effects ───────────────────────────────────────────────────────── */
 .hb-glow-teal {
-  box-shadow: 0 0 20px rgba(13, 148, 136, 0.12), 0 0 60px rgba(13, 148, 136, 0.04);
+  box-shadow: 0 0 22px rgba(15, 109, 105, 0.18), 0 0 60px rgba(15, 109, 105, 0.05);
 }
 
 .hb-glow-teal-strong {
-  box-shadow: 0 0 15px rgba(13, 148, 136, 0.2), 0 0 45px rgba(13, 148, 136, 0.06);
+  box-shadow: 0 0 18px rgba(15, 109, 105, 0.24), 0 0 50px rgba(15, 109, 105, 0.07);
 }
 
 .hb-glow-blue {
-  box-shadow: 0 0 20px rgba(59, 130, 246, 0.1), 0 0 60px rgba(59, 130, 246, 0.03);
+  box-shadow: 0 0 18px rgba(59, 111, 156, 0.15), 0 0 56px rgba(59, 111, 156, 0.05);
 }
 
-/* ── Panel styles ───────────────────────────────────────────────────────── */
-.hb-panel {
-  background: var(--hb-white);
-  border: 1px solid var(--hb-border);
-  border-radius: 12px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04), 0 1px 2px rgba(0, 0, 0, 0.02);
-}
-
-.hb-panel-elevated {
-  background: var(--hb-white);
-  border: 1px solid var(--hb-border);
-  border-radius: 12px;
-  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.06), 0 1px 4px rgba(0, 0, 0, 0.04);
+.hb-panel,
+.hb-panel-elevated,
+.hb-panel-glass {
+  background: var(--surface-strong);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  box-shadow: var(--shadow-soft);
 }
 
 .hb-panel-glass {
-  background: rgba(255, 255, 255, 0.85);
-  backdrop-filter: blur(16px) saturate(1.2);
-  -webkit-backdrop-filter: blur(16px) saturate(1.2);
-  border: 1px solid rgba(226, 232, 240, 0.8);
-  border-radius: 12px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.03);
+  background: rgba(255, 252, 246, 0.76);
 }
 
-/* ── Input styles ───────────────────────────────────────────────────────── */
 .hb-input {
-  background: var(--hb-white);
-  border: 1px solid var(--hb-border);
-  border-radius: 8px;
-  color: var(--hb-text-primary);
+  background: rgba(255, 252, 246, 0.9);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  color: var(--ink);
   padding: 10px 14px;
   font-size: 14px;
   outline: none;
-  transition: border-color 0.2s, box-shadow 0.2s;
 }
 
 .hb-input:focus {
-  border-color: var(--hb-teal);
-  box-shadow: 0 0 0 3px rgba(13, 148, 136, 0.1), 0 0 12px rgba(13, 148, 136, 0.05);
+  border-color: var(--mint);
+  box-shadow: 0 0 0 4px rgba(121, 211, 196, 0.18);
 }
 
 .hb-input::placeholder {
   color: var(--hb-text-ghost);
 }
 
-/* ── Button styles ──────────────────────────────────────────────────────── */
 .hb-btn-primary {
-  background: linear-gradient(135deg, var(--hb-teal) 0%, var(--hb-teal-dim) 100%);
-  color: #ffffff;
+  background: linear-gradient(135deg, #12303a 0%, #0f6d69 100%);
+  color: #fff;
   font-weight: 600;
-  border: none;
-  border-radius: 8px;
+  border: 0;
+  border-radius: 999px;
   padding: 10px 20px;
   font-size: 14px;
   cursor: pointer;
-  transition: all 0.2s;
-  box-shadow: 0 2px 8px rgba(13, 148, 136, 0.25);
+  box-shadow: var(--shadow-strong);
 }
 
 .hb-btn-primary:hover {
-  box-shadow: 0 4px 20px rgba(13, 148, 136, 0.35), 0 0 40px rgba(13, 148, 136, 0.1);
   transform: translateY(-1px);
 }
 
-.hb-btn-primary:active {
-  transform: translateY(0);
-}
-
 .hb-btn-primary:disabled {
-  opacity: 0.5;
+  opacity: 0.55;
   cursor: not-allowed;
   transform: none;
   box-shadow: none;
 }
 
 .hb-btn-ghost {
-  background: var(--hb-white);
-  border: 1px solid var(--hb-border);
-  color: var(--hb-text-secondary);
-  border-radius: 8px;
+  background: rgba(255, 252, 246, 0.78);
+  border: 1px solid var(--line);
+  color: var(--ink);
+  border-radius: 999px;
   padding: 10px 20px;
   font-size: 14px;
   cursor: pointer;
-  transition: all 0.2s;
 }
 
 .hb-btn-ghost:hover {
-  border-color: var(--hb-border-bright);
-  color: var(--hb-text-primary);
-  background: var(--hb-snow);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+  background: rgba(255, 255, 255, 0.95);
+  border-color: var(--line-strong);
 }
 
-/* ── Animations ─────────────────────────────────────────────────────────── */
+@keyframes shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+
+  100% {
+    background-position: -200% 0;
+  }
+}
+
 @keyframes hb-fade-in {
-  from { opacity: 0; transform: translateY(8px); }
-  to { opacity: 1; transform: translateY(0); }
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 @keyframes hb-fade-in-scale {
-  from { opacity: 0; transform: scale(0.97) translateY(4px); }
-  to { opacity: 1; transform: scale(1) translateY(0); }
-}
+  from {
+    opacity: 0;
+    transform: scale(0.97) translateY(4px);
+  }
 
-@keyframes hb-slide-in-right {
-  from { opacity: 0; transform: translateX(12px); }
-  to { opacity: 1; transform: translateX(0); }
-}
-
-@keyframes hb-pulse-glow {
-  0%, 100% { box-shadow: 0 0 4px rgba(13, 148, 136, 0.3); }
-  50% { box-shadow: 0 0 12px rgba(13, 148, 136, 0.5), 0 0 24px rgba(13, 148, 136, 0.2); }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
 }
 
 @keyframes hb-heartbeat {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.4; }
-}
+  0%,
+  100% {
+    opacity: 1;
+  }
 
-@keyframes hb-shimmer {
-  0% { background-position: -200% 0; }
-  100% { background-position: 200% 0; }
+  50% {
+    opacity: 0.4;
+  }
 }
 
 .hb-animate-in {
@@ -220,76 +296,29 @@ body {
   animation: hb-fade-in-scale 0.5s ease-out both;
 }
 
-.hb-stagger-1 { animation-delay: 0.05s; }
-.hb-stagger-2 { animation-delay: 0.1s; }
-.hb-stagger-3 { animation-delay: 0.15s; }
-.hb-stagger-4 { animation-delay: 0.2s; }
-.hb-stagger-5 { animation-delay: 0.25s; }
-.hb-stagger-6 { animation-delay: 0.3s; }
-.hb-stagger-7 { animation-delay: 0.35s; }
-.hb-stagger-8 { animation-delay: 0.4s; }
-
-/* ── EKG decorative line ────────────────────────────────────────────────── */
 .hb-ekg-line {
-  background: linear-gradient(90deg,
+  height: 2px;
+  opacity: 0.34;
+  background: linear-gradient(
+    90deg,
     transparent 0%,
-    transparent 20%,
-    var(--hb-teal) 20%,
-    var(--hb-teal) 20.5%,
-    transparent 20.5%,
-    transparent 30%,
-    var(--hb-teal) 30%,
-    transparent 32%,
-    var(--hb-teal) 34%,
+    transparent 18%,
+    var(--teal) 18%,
+    var(--teal) 18.4%,
+    transparent 18.4%,
+    transparent 28%,
+    var(--gold) 28%,
+    transparent 31%,
+    var(--teal) 33%,
     transparent 36%,
-    transparent 38%,
-    var(--hb-teal) 38%,
-    var(--hb-teal) 38.5%,
-    transparent 38.5%,
+    transparent 39%,
+    var(--teal) 39%,
+    var(--teal) 39.4%,
+    transparent 39.4%,
     transparent 100%
   );
-  height: 2px;
-  opacity: 0.25;
 }
 
-/* ── Scrollbar styling ──────────────────────────────────────────────────── */
-::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
-}
-
-::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-::-webkit-scrollbar-thumb {
-  background: var(--hb-border-bright);
-  border-radius: 3px;
-}
-
-::-webkit-scrollbar-thumb:hover {
-  background: var(--hb-text-ghost);
-}
-
-/* ── Selection ──────────────────────────────────────────────────────────── */
-::selection {
-  background: rgba(13, 148, 136, 0.15);
-  color: var(--hb-text-primary);
-}
-
-/* ── Skeleton loading ───────────────────────────────────────────────────── */
-.hb-skeleton {
-  background: linear-gradient(90deg,
-    var(--hb-cloud) 25%,
-    var(--hb-mist) 50%,
-    var(--hb-cloud) 75%
-  );
-  background-size: 200% 100%;
-  animation: hb-shimmer 1.5s infinite;
-  border-radius: 6px;
-}
-
-/* ── Status dot pulse ───────────────────────────────────────────────────── */
 .hb-status-pulse {
   position: relative;
 }
@@ -298,8 +327,32 @@ body {
   content: "";
   position: absolute;
   inset: -2px;
-  border-radius: 50%;
+  border-radius: 999px;
   background: inherit;
   opacity: 0.4;
   animation: hb-heartbeat 2s ease-in-out infinite;
 }
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(17, 32, 42, 0.2);
+  border-radius: 999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(17, 32, 42, 0.34);
+}
+
+::selection {
+  background: rgba(15, 109, 105, 0.18);
+  color: var(--ink);
+}
+

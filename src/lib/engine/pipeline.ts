@@ -76,6 +76,9 @@ export interface ProcessResult {
 interface ChannelConfig {
   id: string;
   name: string;
+  source_type: string;
+  destination_type: string;
+  message_format: string;
   source_connector_type: string;
   source_connector_properties: Record<string, unknown> | null;
   source_filter: { script?: string } | null;
@@ -179,7 +182,7 @@ export async function processMessage(
         pipelineStart
       );
       result.logs = allLogs;
-      await saveMessageToDB(supabase, result);
+      await saveMessageToDB(supabase, result, channelConfig, destConfigs);
       return result;
     }
     currentMessage = preResult.msg;
@@ -215,7 +218,7 @@ export async function processMessage(
       result.errorContent = `Source filter error: ${filterResult.error}`;
       result.status = "error";
     }
-    await saveMessageToDB(supabase, result);
+    await saveMessageToDB(supabase, result, channelConfig, destConfigs);
     return result;
   }
 
@@ -233,7 +236,7 @@ export async function processMessage(
     );
     result.preprocessedContent = preprocessedContent;
     result.logs = allLogs;
-    await saveMessageToDB(supabase, result);
+    await saveMessageToDB(supabase, result, channelConfig, destConfigs);
     return result;
   }
 
@@ -297,7 +300,7 @@ export async function processMessage(
     sourceFilterPassed: true,
   };
 
-  await saveMessageToDB(supabase, result);
+  await saveMessageToDB(supabase, result, channelConfig, destConfigs);
   return result;
 }
 
@@ -459,6 +462,28 @@ function detectDataType(message: string): string {
   return "RAW";
 }
 
+function normalizeMessageFormat(result: ProcessResult, channelConfig: ChannelConfig) {
+  switch (result.dataType) {
+    case "HL7V2":
+      return "HL7v2";
+    case "FHIR":
+      return channelConfig.message_format.startsWith("FHIR_") ? channelConfig.message_format : "FHIR_R4";
+    case "JSON":
+      return "JSON";
+    case "XML":
+      return "XML";
+    default:
+      return channelConfig.message_format || "HL7v2";
+  }
+}
+
+function getSourceSystem(channelConfig: ChannelConfig) {
+  return channelConfig.source_type || channelConfig.source_connector_type || channelConfig.name || "Source";
+}
+
+function getDefaultDestination(channelConfig: ChannelConfig, destinations: DestinationConfig[]) {
+  return destinations[0]?.name || destinations[0]?.connector_type || channelConfig.destination_type || "Destination";
+}
 function buildErrorResult(
   messageId: string,
   channelId: string,
@@ -489,12 +514,31 @@ function buildErrorResult(
 
 async function saveMessageToDB(
   supabase: any,
-  result: ProcessResult
+  result: ProcessResult,
+  channelConfig: ChannelConfig,
+  destinations: DestinationConfig[]
 ): Promise<void> {
   try {
-    // Save the main source message
+    const messageFormat = normalizeMessageFormat(result, channelConfig);
+    const sourceSystem = getSourceSystem(channelConfig);
+    const destinationSystem = getDefaultDestination(channelConfig, destinations);
+    const baseMetadata = {
+      pipelineMessageId: result.messageId,
+      sourceFilterPassed: result.sourceFilterPassed,
+      destinationCount: result.destinations.length,
+    };
+
     const { error } = await supabase.from("messages").insert({
+      message_id: result.messageId,
       channel_id: result.channelId,
+      source_system: sourceSystem,
+      destination_system: destinationSystem,
+      message_type: result.messageType || "Unknown",
+      message_format: messageFormat,
+      raw_payload: result.rawContent,
+      transformed_payload: result.transformedContent,
+      error_message: result.errorContent || null,
+      retry_attempts: 0,
       connector_name: "Source",
       status: result.status,
       raw_content: result.rawContent,
@@ -506,14 +550,12 @@ async function saveMessageToDB(
       connector_map: result.connectorMap,
       channel_map: result.channelMap,
       response_map: result.responseMap,
-      message_type: result.messageType || null,
-      data_type: result.dataType || null,
+      data_type: result.dataType || detectDataType(result.rawContent),
       direction: result.direction,
       processing_time_ms: result.processingTimeMs,
       custom_metadata: {
-        sourceFilterPassed: result.sourceFilterPassed,
-        destinationCount: result.destinations.length,
-        logs: result.logs.slice(0, 100), // Limit stored logs
+        ...baseMetadata,
+        logs: result.logs.slice(0, 100),
       },
     });
 
@@ -521,10 +563,18 @@ async function saveMessageToDB(
       console.error("Failed to save message to DB:", error.message);
     }
 
-    // Save individual destination messages
     for (const dest of result.destinations) {
       await supabase.from("messages").insert({
+        message_id: `${result.messageId}:${dest.destinationId}`,
         channel_id: result.channelId,
+        source_system: channelConfig.name,
+        destination_system: dest.connectorName,
+        message_type: result.messageType || "Unknown",
+        message_format: messageFormat,
+        raw_payload: result.rawContent,
+        transformed_payload: dest.transformedContent || result.transformedContent,
+        error_message: dest.error || null,
+        retry_attempts: 0,
         connector_name: dest.connectorName,
         status: dest.status,
         raw_content: result.rawContent,
@@ -536,11 +586,11 @@ async function saveMessageToDB(
         connector_map: {},
         channel_map: result.channelMap,
         response_map: result.responseMap,
-        message_type: result.messageType || null,
-        data_type: result.dataType || null,
+        data_type: result.dataType || detectDataType(result.rawContent),
         direction: "outbound",
         processing_time_ms: dest.processingTimeMs,
         custom_metadata: {
+          ...baseMetadata,
           destinationId: dest.destinationId,
           connectorType: dest.connectorType,
           filtered: dest.filtered,
@@ -552,3 +602,6 @@ async function saveMessageToDB(
     console.error("Error saving message to database:", err);
   }
 }
+
+
+

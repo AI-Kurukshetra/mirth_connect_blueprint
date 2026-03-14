@@ -1,314 +1,642 @@
-import { createClient } from "@supabase/supabase-js";
+import { createClient as createServiceClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
+import { requireRole } from "@/lib/authz";
 
-function uuid() {
-  return crypto.randomUUID();
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+function hoursAgo(hours: number) {
+  return new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
 }
 
-function hoursAgo(h: number) {
-  return new Date(Date.now() - h * 3600_000).toISOString();
+function minutesAgo(minutes: number) {
+  return new Date(Date.now() - minutes * 60 * 1000).toISOString();
 }
 
-function minutesAgo(m: number) {
-  return new Date(Date.now() - m * 60_000).toISOString();
-}
+const seedChannelRows = [
+  {
+    channel_id: "CH-001",
+    name: "ADT Feed - Epic to Lab",
+    description: "Receives inpatient ADT traffic from Epic and fans out to the lab platform plus the FHIR repository.",
+    source_type: "MLLP",
+    destination_type: "REST",
+    message_format: "HL7v2",
+    status: "active",
+    enabled: true,
+    retry_count: 3,
+    retry_interval: 60,
+    source_connector_type: "hl7_listener",
+    source_connector_properties: { host: "0.0.0.0", port: 2575, mode: "mllp" },
+    source_filter: { script: 'return msg.MSH[9][1].toString() === "ADT";' },
+    source_transformer: { script: 'channelMap.put("patientId", msg.PID[3][1].toString()); return msg;' },
+    preprocessor_script: 'return message.trim();',
+    postprocessor_script: 'return;',
+  },
+  {
+    channel_id: "CH-003",
+    name: "FHIR Patient Sync",
+    description: "Publishes patient updates from operational systems into the MedFlow FHIR repository and downstream REST subscribers.",
+    source_type: "HTTP",
+    destination_type: "REST",
+    message_format: "FHIR_R4",
+    status: "active",
+    enabled: true,
+    retry_count: 5,
+    retry_interval: 90,
+    source_connector_type: "http_listener",
+    source_connector_properties: { path: "/fhir/patient-sync", method: "POST" },
+    source_filter: null,
+    source_transformer: null,
+    preprocessor_script: null,
+    postprocessor_script: null,
+  },
+  {
+    channel_id: "CH-006",
+    name: "Pharmacy Dispense Feed",
+    description: "Handles medication dispense events and queues retries for downstream pharmacy handoff failures.",
+    source_type: "MLLP",
+    destination_type: "TCP",
+    message_format: "HL7v2",
+    status: "error",
+    enabled: true,
+    retry_count: 4,
+    retry_interval: 75,
+    source_connector_type: "hl7_listener",
+    source_connector_properties: { host: "0.0.0.0", port: 2577, mode: "mllp" },
+    source_filter: null,
+    source_transformer: { script: 'return message;' },
+    preprocessor_script: null,
+    postprocessor_script: null,
+  },
+] as const;
 
 export async function POST() {
-  const supabase = createClient(supabaseUrl, supabaseKey, {
+  const access = await requireRole(["admin"]);
+  if (!access.ok) {
+    return NextResponse.json({ error: access.message }, { status: access.status });
+  }
+
+  if (!supabaseUrl || !serviceRoleKey) {
+    return NextResponse.json(
+      { error: "Supabase service role credentials are required to run the seed route." },
+      { status: 500 },
+    );
+  }
+
+  const supabase = createServiceClient(supabaseUrl, serviceRoleKey, {
     auth: { autoRefreshToken: false, persistSession: false },
   });
-
-  // ── Fixed IDs so re-running is idempotent ──────────────────
-  const CH_ADT = "a0000001-0000-0000-0000-000000000001";
-  const CH_LAB = "a0000001-0000-0000-0000-000000000002";
-  const CH_ORDERS = "a0000001-0000-0000-0000-000000000003";
-  const CH_FHIR = "a0000001-0000-0000-0000-000000000004";
-  const CH_PHARMACY = "a0000001-0000-0000-0000-000000000005";
-
-  const DEST_ADT_DB = "b0000001-0000-0000-0000-000000000001";
-  const DEST_ADT_FHIR = "b0000001-0000-0000-0000-000000000002";
-  const DEST_LAB_DB = "b0000001-0000-0000-0000-000000000003";
-  const DEST_LAB_HTTP = "b0000001-0000-0000-0000-000000000004";
-  const DEST_ORDERS_LAB = "b0000001-0000-0000-0000-000000000005";
-  const DEST_FHIR_REPO = "b0000001-0000-0000-0000-000000000006";
-  const DEST_FHIR_HTTP = "b0000001-0000-0000-0000-000000000007";
-  const DEST_PHARM_DB = "b0000001-0000-0000-0000-000000000008";
-
-  const msgIds = Array.from({ length: 50 }, (_, i) =>
-    `c0000000-0000-0000-0000-0000000000${String(i + 1).padStart(2, "0")}`
-  );
 
   const results: Record<string, string> = {};
 
   try {
-    // ══════════════════════════════════════════════════════════
-    // 1. CREATE DEMO USER
-    // ══════════════════════════════════════════════════════════
-    if (process.env.SUPABASE_SERVICE_ROLE_KEY) {
-      const { data: user, error: userErr } = await supabase.auth.admin.createUser({
-        email: "demo@healthbridge.io",
-        password: "demo1234",
-        email_confirm: true,
-        user_metadata: { full_name: "Demo Admin" },
-      });
-      results.user = userErr ? `Skipped (${userErr.message})` : `Created: ${user.user.id}`;
-    } else {
-      results.user = "Skipped — no service role key";
+    const { data: channels, error: channelError } = await supabase
+      .from("channels")
+      .upsert(seedChannelRows, { onConflict: "channel_id" })
+      .select("id, channel_id, name");
+
+    if (channelError || !channels) {
+      return NextResponse.json({ error: channelError?.message || "Failed to seed channels." }, { status: 500 });
     }
 
-    // ══════════════════════════════════════════════════════════
-    // 2. CHANNELS (matches: id, name, description, group_id, revision, status, deployed, enabled, initial_state, inbound_data_type, outbound_data_type, source_connector_type, source_connector_properties, source_queue_enabled, source_response, source_filter, source_transformer, preprocessor_script, postprocessor_script, deploy_script, undeploy_script, message_storage_mode, content_encryption, prune_content_days, prune_metadata_days, tags, created_by, created_at, updated_at, last_deployed_at)
-    // ══════════════════════════════════════════════════════════
-    const channels = [
+    results.channels = `Upserted ${channels.length} channels`;
+
+    const channelMap = new Map(channels.map((channel) => [channel.channel_id, channel]));
+
+    const destinationRows = [
       {
-        id: CH_ADT, name: "ADT Inbound Processor",
-        description: "Receives ADT messages from Epic EHR, transforms patient demographics, and routes to FHIR repository and clinical database.",
-        status: "started", deployed: true, enabled: true, revision: 3,
-        source_connector_type: "tcp_listener",
-        source_connector_properties: { host: "0.0.0.0", port: 2575, mode: "mllp", encoding: "UTF-8", receiveTimeout: 30000, maxConnections: 10 },
-        source_queue_enabled: false, source_response: "auto",
-        source_filter: { script: '// Accept only ADT^A01 and ADT^A08\nvar msgType = msg.MSH["9"]["1"].toString();\nvar trigger = msg.MSH["9"]["2"].toString();\nreturn (msgType === "ADT" && (trigger === "A01" || trigger === "A08"));' },
-        source_transformer: { script: '// Extract patient demographics\nvar pid = msg.PID["3"]["1"].toString();\nvar ln = msg.PID["5"]["1"].toString();\nvar fn = msg.PID["5"]["2"].toString();\nchannelMap.put("patientId", pid);\nchannelMap.put("patientName", fn + " " + ln);' },
-        preprocessor_script: 'logger.info("Received ADT message");',
-        postprocessor_script: 'var c = globalChannelMap.getOrDefault("adtCount", 0);\nglobalChannelMap.put("adtCount", c + 1);',
-        deploy_script: 'logger.info("ADT Inbound Processor deployed");',
-        undeploy_script: 'logger.info("ADT Inbound Processor undeployed");',
-        inbound_data_type: "hl7v2", outbound_data_type: "hl7v2", initial_state: "started",
-        message_storage_mode: "development", content_encryption: false,
-        prune_content_days: 30, prune_metadata_days: 90,
-        tags: ["adt", "epic", "production"],
-        last_deployed_at: hoursAgo(2), created_at: hoursAgo(720), updated_at: hoursAgo(2),
+        channel_id: channelMap.get("CH-001")?.id,
+        name: "Clinical database",
+        sort_order: 0,
+        enabled: true,
+        connector_type: "database_writer",
+        connector_properties: { connection: "postgresql://clinicaldb", table: "patient_admissions" },
+        filter: null,
+        transformer: { script: 'return JSON.stringify({ patientId: channelMap.get("patientId") });' },
+        response_transformer: null,
+        queue_enabled: true,
+        retry_count: 3,
+        retry_interval_ms: 30000,
+        rotate_queue: false,
+        queue_thread_count: 1,
+        inbound_data_type: "HL7v2",
+        outbound_data_type: "JSON",
       },
       {
-        id: CH_LAB, name: "Lab Results Router",
-        description: "Processes ORU^R01 lab results from the laboratory information system and distributes to downstream consumers.",
-        status: "started", deployed: true, enabled: true, revision: 5,
-        source_connector_type: "tcp_listener",
-        source_connector_properties: { host: "0.0.0.0", port: 2576, mode: "mllp", encoding: "UTF-8" },
-        source_queue_enabled: false, source_response: "auto",
-        source_filter: { script: 'return msg.MSH["9"]["1"].toString() === "ORU";' },
-        source_transformer: { script: 'channelMap.put("orderId", msg.OBR["2"]["1"].toString());' },
-        preprocessor_script: null, postprocessor_script: null, deploy_script: null, undeploy_script: null,
-        inbound_data_type: "hl7v2", outbound_data_type: "json", initial_state: "started",
-        message_storage_mode: "development", content_encryption: false,
-        prune_content_days: 14, prune_metadata_days: 60,
-        tags: ["lab", "oru", "production"],
-        last_deployed_at: hoursAgo(6), created_at: hoursAgo(600), updated_at: hoursAgo(6),
+        channel_id: channelMap.get("CH-001")?.id,
+        name: "FHIR repository",
+        sort_order: 1,
+        enabled: true,
+        connector_type: "fhir_repository",
+        connector_properties: { endpoint: "internal-fhir-repo", method: "upsert" },
+        filter: null,
+        transformer: { script: 'return message;' },
+        response_transformer: null,
+        queue_enabled: true,
+        retry_count: 5,
+        retry_interval_ms: 60000,
+        rotate_queue: true,
+        queue_thread_count: 2,
+        inbound_data_type: "HL7v2",
+        outbound_data_type: "FHIR_R4",
       },
       {
-        id: CH_ORDERS, name: "Order Dispatch",
-        description: "Receives ORM orders from the EHR and dispatches to laboratory and radiology systems.",
-        status: "started", deployed: true, enabled: true, revision: 2,
-        source_connector_type: "http_listener",
-        source_connector_properties: { contextPath: "/api/orders", port: 8080, method: "POST", responseContentType: "application/json" },
-        source_queue_enabled: false, source_response: "auto",
-        source_filter: null,
-        source_transformer: { script: 'var orderType = msg.OBR ? msg.OBR["4"]["1"].toString() : "UNKNOWN";\nchannelMap.put("orderType", orderType);' },
-        preprocessor_script: null, postprocessor_script: null, deploy_script: null, undeploy_script: null,
-        inbound_data_type: "hl7v2", outbound_data_type: "hl7v2", initial_state: "started",
-        message_storage_mode: "production", content_encryption: false,
-        prune_content_days: 7, prune_metadata_days: 30,
-        tags: ["orders", "orm"],
-        last_deployed_at: hoursAgo(24), created_at: hoursAgo(480), updated_at: hoursAgo(24),
+        channel_id: channelMap.get("CH-003")?.id,
+        name: "HIE REST subscriber",
+        sort_order: 0,
+        enabled: true,
+        connector_type: "http_sender",
+        connector_properties: { url: "https://hie.example.com/fhir", method: "POST" },
+        filter: null,
+        transformer: null,
+        response_transformer: null,
+        queue_enabled: true,
+        retry_count: 4,
+        retry_interval_ms: 45000,
+        rotate_queue: false,
+        queue_thread_count: 1,
+        inbound_data_type: "FHIR_R4",
+        outbound_data_type: "FHIR_R4",
       },
       {
-        id: CH_FHIR, name: "FHIR R4 Gateway",
-        description: "REST gateway that accepts FHIR R4 bundles and persists resources to the FHIR repository with validation.",
-        status: "started", deployed: true, enabled: true, revision: 1,
-        source_connector_type: "http_listener",
-        source_connector_properties: { contextPath: "/fhir/r4", port: 8443, method: "POST", responseContentType: "application/fhir+json", useTLS: true },
-        source_queue_enabled: false, source_response: "auto",
-        source_filter: { script: 'var rt = JSON.parse(connectorMessage.getRawData()).resourceType;\nreturn rt === "Bundle" || rt === "Patient" || rt === "Observation";' },
-        source_transformer: null,
-        preprocessor_script: null, postprocessor_script: null, deploy_script: null, undeploy_script: null,
-        inbound_data_type: "fhir", outbound_data_type: "fhir", initial_state: "started",
-        message_storage_mode: "development", content_encryption: true,
-        prune_content_days: 60, prune_metadata_days: 365,
-        tags: ["fhir", "r4", "gateway"],
-        last_deployed_at: hoursAgo(48), created_at: hoursAgo(336), updated_at: hoursAgo(48),
+        channel_id: channelMap.get("CH-006")?.id,
+        name: "Pharmacy TCP sender",
+        sort_order: 0,
+        enabled: true,
+        connector_type: "tcp_sender",
+        connector_properties: { host: "pharmacy.internal", port: 4100, mode: "mllp" },
+        filter: null,
+        transformer: null,
+        response_transformer: null,
+        queue_enabled: true,
+        retry_count: 4,
+        retry_interval_ms: 30000,
+        rotate_queue: false,
+        queue_thread_count: 1,
+        inbound_data_type: "HL7v2",
+        outbound_data_type: "HL7v2",
       },
+    ].filter((row) => row.channel_id);
+
+    const seededChannelIds = channels.map((channel) => channel.id);
+    const { error: destinationDeleteError } = await supabase
+      .from("destinations")
+      .delete()
+      .in("channel_id", seededChannelIds);
+
+    if (destinationDeleteError) {
+      return NextResponse.json({ error: destinationDeleteError.message }, { status: 500 });
+    }
+
+    const { error: destinationInsertError } = await supabase.from("destinations").insert(destinationRows);
+    if (destinationInsertError) {
+      return NextResponse.json({ error: destinationInsertError.message }, { status: 500 });
+    }
+    results.destinations = `Inserted ${destinationRows.length} destinations`;
+
+    const messageRows = [
       {
-        id: CH_PHARMACY, name: "Pharmacy Integration",
-        description: "Processes medication orders (RDE/RDS) between the EHR and pharmacy system for prescription management.",
-        status: "stopped", deployed: false, enabled: true, revision: 1,
-        source_connector_type: "tcp_listener",
-        source_connector_properties: { host: "0.0.0.0", port: 2577, mode: "mllp", encoding: "UTF-8" },
-        source_queue_enabled: false, source_response: "auto",
-        source_filter: null, source_transformer: null,
-        preprocessor_script: null, postprocessor_script: null, deploy_script: null, undeploy_script: null,
-        inbound_data_type: "hl7v2", outbound_data_type: "hl7v2", initial_state: "stopped",
-        message_storage_mode: "development", content_encryption: false,
-        prune_content_days: 14, prune_metadata_days: 30,
-        tags: ["pharmacy", "rde", "development"],
-        last_deployed_at: null, created_at: hoursAgo(72), updated_at: hoursAgo(72),
-      },
-    ];
-
-    // Delete existing seed data first, then insert
-    await supabase.from("queue_entries").delete().in("channel_id", [CH_ADT, CH_LAB, CH_ORDERS, CH_FHIR, CH_PHARMACY]);
-    await supabase.from("messages").delete().in("channel_id", [CH_ADT, CH_LAB, CH_ORDERS, CH_FHIR, CH_PHARMACY]);
-    await supabase.from("channel_stats").delete().in("channel_id", [CH_ADT, CH_LAB, CH_ORDERS, CH_FHIR, CH_PHARMACY]);
-    await supabase.from("destinations").delete().in("channel_id", [CH_ADT, CH_LAB, CH_ORDERS, CH_FHIR, CH_PHARMACY]);
-    await supabase.from("channels").delete().in("id", [CH_ADT, CH_LAB, CH_ORDERS, CH_FHIR, CH_PHARMACY]);
-
-    const { error: chErr } = await supabase.from("channels").insert(channels);
-    results.channels = chErr ? `Error: ${chErr.message}` : `Created ${channels.length} channels`;
-
-    // ══════════════════════════════════════════════════════════
-    // 3. DESTINATIONS
-    // ══════════════════════════════════════════════════════════
-    const destinations = [
-      { id: DEST_ADT_DB, channel_id: CH_ADT, name: "Clinical Database", sort_order: 0, enabled: true, connector_type: "database_writer", connector_properties: { driver: "postgresql", url: "postgresql://clinicaldb:5432/patients", username: "hl7_writer", password: "***", query: "INSERT INTO patient_admissions (mrn, name, admit_date) VALUES (${patientId}, ${patientName}, NOW())" }, filter: null, transformer: null, response_transformer: null, queue_enabled: true, retry_count: 3, retry_interval_ms: 30000, rotate_queue: false, queue_thread_count: 1, inbound_data_type: "hl7v2", outbound_data_type: "raw" },
-      { id: DEST_ADT_FHIR, channel_id: CH_ADT, name: "FHIR Repository", sort_order: 1, enabled: true, connector_type: "http_sender", connector_properties: { url: "https://fhir.hospital.org/r4/Patient", method: "POST", contentType: "application/fhir+json", headers: '{"Authorization":"Bearer fhir-token"}', timeout: 10000 }, filter: null, transformer: { script: 'var patient = {resourceType:"Patient",identifier:[{value:channelMap.get("patientId")}]};\nreturn JSON.stringify(patient);' }, response_transformer: null, queue_enabled: true, retry_count: 5, retry_interval_ms: 60000, rotate_queue: true, queue_thread_count: 2, inbound_data_type: "hl7v2", outbound_data_type: "fhir" },
-      { id: DEST_LAB_DB, channel_id: CH_LAB, name: "Results Database", sort_order: 0, enabled: true, connector_type: "database_writer", connector_properties: { driver: "postgresql", url: "postgresql://labdb:5432/results", username: "lab_writer", password: "***", query: "INSERT INTO lab_results (order_id, result_json) VALUES (${orderId}, ${resultJson})" }, filter: null, transformer: null, response_transformer: null, queue_enabled: true, retry_count: 3, retry_interval_ms: 15000, rotate_queue: false, queue_thread_count: 1, inbound_data_type: "hl7v2", outbound_data_type: "json" },
-      { id: DEST_LAB_HTTP, channel_id: CH_LAB, name: "Provider Portal Webhook", sort_order: 1, enabled: true, connector_type: "http_sender", connector_properties: { url: "https://portal.hospital.org/api/lab-results", method: "POST", contentType: "application/json", headers: '{"X-API-Key":"portal-key"}', timeout: 5000 }, filter: { script: '// Only send abnormal results\nreturn true;' }, transformer: null, response_transformer: null, queue_enabled: false, retry_count: 0, retry_interval_ms: 0, rotate_queue: false, queue_thread_count: 1, inbound_data_type: "hl7v2", outbound_data_type: "json" },
-      { id: DEST_ORDERS_LAB, channel_id: CH_ORDERS, name: "Lab Information System", sort_order: 0, enabled: true, connector_type: "tcp_sender", connector_properties: { host: "lis.hospital.internal", port: 3500, mode: "mllp", encoding: "UTF-8", sendTimeout: 10000 }, filter: null, transformer: null, response_transformer: null, queue_enabled: true, retry_count: 5, retry_interval_ms: 30000, rotate_queue: true, queue_thread_count: 2, inbound_data_type: "hl7v2", outbound_data_type: "hl7v2" },
-      { id: DEST_FHIR_REPO, channel_id: CH_FHIR, name: "FHIR Data Store", sort_order: 0, enabled: true, connector_type: "database_writer", connector_properties: { driver: "postgresql", url: "postgresql://fhirdb:5432/fhir_r4", username: "fhir_writer", password: "***", query: "INSERT INTO fhir_resources (resource_type, resource_id, resource) VALUES (${resourceType}, ${resourceId}, ${resourceJson})" }, filter: null, transformer: null, response_transformer: null, queue_enabled: true, retry_count: 3, retry_interval_ms: 10000, rotate_queue: false, queue_thread_count: 1, inbound_data_type: "fhir", outbound_data_type: "fhir" },
-      { id: DEST_FHIR_HTTP, channel_id: CH_FHIR, name: "HIE FHIR Endpoint", sort_order: 1, enabled: true, connector_type: "http_sender", connector_properties: { url: "https://hie.state.gov/fhir/r4", method: "POST", contentType: "application/fhir+json", headers: '{"Authorization":"Bearer hie-token"}', timeout: 15000 }, filter: null, transformer: null, response_transformer: null, queue_enabled: true, retry_count: 10, retry_interval_ms: 120000, rotate_queue: true, queue_thread_count: 3, inbound_data_type: "fhir", outbound_data_type: "fhir" },
-      { id: DEST_PHARM_DB, channel_id: CH_PHARMACY, name: "Pharmacy System", sort_order: 0, enabled: true, connector_type: "tcp_sender", connector_properties: { host: "pharmacy.hospital.internal", port: 4100, mode: "mllp", encoding: "UTF-8" }, filter: null, transformer: null, response_transformer: null, queue_enabled: true, retry_count: 3, retry_interval_ms: 30000, rotate_queue: false, queue_thread_count: 1, inbound_data_type: "hl7v2", outbound_data_type: "hl7v2" },
-    ];
-
-    const { error: destErr } = await supabase.from("destinations").insert(destinations);
-    results.destinations = destErr ? `Error: ${destErr.message}` : `Created ${destinations.length} destinations`;
-
-    // ══════════════════════════════════════════════════════════
-    // 4. CHANNEL STATS (columns: id, channel_id, destination_id, received, filtered, queued, sent, errored, period_start, period_end, created_at)
-    // ══════════════════════════════════════════════════════════
-    const now = new Date();
-    const periodStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
-    const periodEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1).toISOString();
-
-    const channelStats = [
-      { id: uuid(), channel_id: CH_ADT, destination_id: DEST_ADT_DB, received: 1247, filtered: 83, queued: 12, sent: 1152, errored: 7, period_start: periodStart, period_end: periodEnd },
-      { id: uuid(), channel_id: CH_ADT, destination_id: DEST_ADT_FHIR, received: 1247, filtered: 83, queued: 4, sent: 1148, errored: 12, period_start: periodStart, period_end: periodEnd },
-      { id: uuid(), channel_id: CH_LAB, destination_id: DEST_LAB_DB, received: 3891, filtered: 245, queued: 3, sent: 3640, errored: 3, period_start: periodStart, period_end: periodEnd },
-      { id: uuid(), channel_id: CH_LAB, destination_id: DEST_LAB_HTTP, received: 3891, filtered: 1200, queued: 0, sent: 2688, errored: 3, period_start: periodStart, period_end: periodEnd },
-      { id: uuid(), channel_id: CH_ORDERS, destination_id: DEST_ORDERS_LAB, received: 892, filtered: 0, queued: 8, sent: 881, errored: 3, period_start: periodStart, period_end: periodEnd },
-      { id: uuid(), channel_id: CH_FHIR, destination_id: DEST_FHIR_REPO, received: 2156, filtered: 112, queued: 2, sent: 2039, errored: 3, period_start: periodStart, period_end: periodEnd },
-      { id: uuid(), channel_id: CH_FHIR, destination_id: DEST_FHIR_HTTP, received: 2156, filtered: 112, queued: 5, sent: 2034, errored: 5, period_start: periodStart, period_end: periodEnd },
-    ];
-
-    const { error: statsErr } = await supabase.from("channel_stats").insert(channelStats);
-    results.channel_stats = statsErr ? `Error: ${statsErr.message}` : `Created ${channelStats.length} stats`;
-
-    // ══════════════════════════════════════════════════════════
-    // 5. MESSAGES (message_id is bigint, not UUID)
-    // ══════════════════════════════════════════════════════════
-    const hl7Adt = 'MSH|^~\\&|EPIC|HOSPITAL_A|RHAPSODY|HIE_SYSTEM|20250315120000||ADT^A01^ADT_A01|MSG00001|P|2.5.1\rEVN|A01|20250315120000\rPID|1||MRN12345^^^HOSPITAL_A^MR||DOE^JANE^MARIE^^MS||19850315|F\rPV1|1|I|WEST^W101^A';
-    const hl7Oru = 'MSH|^~\\&|LAB_SYSTEM|MAIN_LAB|EPIC|HOSPITAL_A|20250315143000||ORU^R01^ORU_R01|LAB001|P|2.5.1\rPID|1||MRN12345^^^HOSPITAL_A^MR||DOE^JANE\rOBR|1|ORD789|FIL456|CBC^Complete Blood Count\rOBX|1|NM|WBC||11.5|10*3/uL|4.5-11.0|H|||F';
-    const hl7Orm = 'MSH|^~\\&|EPIC|HOSPITAL_A|LAB_SYSTEM|MAIN_LAB|20250315090000||ORM^O01^ORM_O01|ORD001|P|2.5.1\rPID|1||MRN67890^^^HOSPITAL_A^MR||SMITH^ROBERT\rORC|NW|ORD789\rOBR|1|ORD789||CBC^Complete Blood Count';
-    const fhirPatient = JSON.stringify({ resourceType: "Patient", id: "pat-001", name: [{ family: "Doe", given: ["Jane"] }], gender: "female", birthDate: "1985-03-15" });
-    const fhirObs = JSON.stringify({ resourceType: "Observation", id: "obs-001", status: "final", code: { coding: [{ system: "http://loinc.org", code: "6690-2", display: "WBC" }] }, valueQuantity: { value: 11.5, unit: "10*3/uL" } });
-
-    const statuses = ["received", "transformed", "sent", "sent", "sent", "sent", "sent", "error", "filtered", "sent"];
-    const channelList = [CH_ADT, CH_ADT, CH_LAB, CH_LAB, CH_LAB, CH_ORDERS, CH_FHIR, CH_FHIR, CH_ADT, CH_LAB];
-    const connectorNames = ["Source", "Clinical Database", "Results Database", "Provider Portal Webhook", "Results Database", "Lab Information System", "FHIR Data Store", "HIE FHIR Endpoint", "Source Filter", "Results Database"];
-    const msgTypes = ["ADT^A01", "ADT^A01", "ORU^R01", "ORU^R01", "ORU^R01", "ORM^O01", "FHIR:Patient", "FHIR:Observation", "ADT^A08", "ORU^R01"];
-    const rawContents = [hl7Adt, hl7Adt, hl7Oru, hl7Oru, hl7Oru, hl7Orm, fhirPatient, fhirObs, hl7Adt, hl7Oru];
-
-    const messages = msgIds.map((id, i) => {
-      const idx = i % 10;
-      const status = statuses[idx];
-      const minsOffset = i * 7;
-      return {
-        id,
-        channel_id: channelList[idx],
-        connector_name: connectorNames[idx],
-        message_id: 100000 + i,
-        status,
-        message_type: msgTypes[idx],
-        data_type: idx >= 6 ? "FHIR" : "HL7V2",
-        direction: "inbound",
-        raw_content: rawContents[idx],
-        transformed_content: status === "filtered" ? null : (idx >= 6 ? rawContents[idx] : `{"patientId":"MRN${12345 + i}","messageType":"${msgTypes[idx]}","processed":true}`),
-        encoded_content: status === "sent" ? "encoded-payload" : null,
-        sent_content: status === "sent" ? "sent-payload" : null,
-        response_content: status === "sent" ? '{"status":"success","ack":"AA"}' : (status === "error" ? '{"status":"error","message":"Connection timeout"}' : null),
-        error_content: status === "error" ? "java.net.ConnectException: Connection refused\n  at TcpConnector.send(TcpConnector.java:142)" : null,
-        processing_time_ms: status === "filtered" ? 2 : Math.floor(Math.random() * 450) + 15,
+        message_id: "MSG-SEED-001",
+        channel_id: channelMap.get("CH-001")?.id,
+        source_system: "Epic EHR",
+        destination_system: "Clinical database",
+        message_type: "ADT^A01",
+        message_format: "HL7v2",
+        status: "sent",
+        raw_payload: "MSH|^~\\&|EPIC|HOSP|LAB|DB|202603141200||ADT^A01|MSG-SEED-001|P|2.5.1\rPID|1||MRN1001^^^HOSP^MR||DOE^JANE",
+        transformed_payload: '{"patientId":"MRN1001","resourceType":"Patient"}',
+        error_message: null,
+        retry_attempts: 0,
+        processing_time_ms: 48,
+        connector_name: "FHIR repository",
+        data_type: "HL7V2",
+        direction: "outbound",
+        raw_content: "MSH|^~\\&|EPIC|HOSP|LAB|DB|202603141200||ADT^A01|MSG-SEED-001|P|2.5.1\rPID|1||MRN1001^^^HOSP^MR||DOE^JANE",
+        transformed_content: '{"patientId":"MRN1001","resourceType":"Patient"}',
+        encoded_content: '{"patientId":"MRN1001","resourceType":"Patient"}',
+        sent_content: '{"patientId":"MRN1001","resourceType":"Patient"}',
+        response_content: '{"status":"accepted"}',
+        error_content: null,
         connector_map: {},
-        channel_map: { patientId: `MRN${12345 + i}` },
+        channel_map: { patientId: "MRN1001" },
+        response_map: { status: "accepted" },
+        custom_metadata: { seededBy: "api-seed-v2", destinationCount: 2 },
+        created_at: hoursAgo(2),
+      },
+      {
+        message_id: "MSG-SEED-002",
+        channel_id: channelMap.get("CH-003")?.id,
+        source_system: "Patient admin service",
+        destination_system: "HIE REST subscriber",
+        message_type: "Patient",
+        message_format: "FHIR_R4",
+        status: "sent",
+        raw_payload: '{"resourceType":"Patient","id":"pat-seed-1"}',
+        transformed_payload: '{"resourceType":"Patient","id":"pat-seed-1","active":true}',
+        error_message: null,
+        retry_attempts: 0,
+        processing_time_ms: 71,
+        connector_name: "HIE REST subscriber",
+        data_type: "FHIR",
+        direction: "outbound",
+        raw_content: '{"resourceType":"Patient","id":"pat-seed-1"}',
+        transformed_content: '{"resourceType":"Patient","id":"pat-seed-1","active":true}',
+        encoded_content: '{"resourceType":"Patient","id":"pat-seed-1","active":true}',
+        sent_content: '{"resourceType":"Patient","id":"pat-seed-1","active":true}',
+        response_content: '{"status":"201 Created"}',
+        error_content: null,
+        connector_map: {},
+        channel_map: { syncMode: "patient" },
+        response_map: { status: "created" },
+        custom_metadata: { seededBy: "api-seed-v2", destinationCount: 1 },
+        created_at: hoursAgo(1),
+      },
+      {
+        message_id: "MSG-SEED-003",
+        channel_id: channelMap.get("CH-006")?.id,
+        source_system: "Epic EHR",
+        destination_system: "Pharmacy TCP sender",
+        message_type: "RDS^O13",
+        message_format: "HL7v2",
+        status: "error",
+        raw_payload: "MSH|^~\\&|EPIC|HOSP|PHARM|EXT|202603141145||RDS^O13|MSG-SEED-003|P|2.5.1",
+        transformed_payload: null,
+        error_message: "Connection refused after queued retry attempts.",
+        retry_attempts: 3,
+        processing_time_ms: 123,
+        connector_name: "Pharmacy TCP sender",
+        data_type: "HL7V2",
+        direction: "outbound",
+        raw_content: "MSH|^~\\&|EPIC|HOSP|PHARM|EXT|202603141145||RDS^O13|MSG-SEED-003|P|2.5.1",
+        transformed_content: null,
+        encoded_content: null,
+        sent_content: null,
+        response_content: null,
+        error_content: "Connection refused after queued retry attempts.",
+        connector_map: {},
+        channel_map: { seededBy: "api-seed-v2" },
         response_map: {},
-        custom_metadata: { sourceFilterPassed: status !== "filtered", destinationCount: status === "filtered" ? 0 : 2 },
-        created_at: minutesAgo(minsOffset),
-      };
-    });
+        custom_metadata: { seededBy: "api-seed-v2", destinationCount: 1 },
+        created_at: minutesAgo(35),
+      },
+    ].filter((row) => row.channel_id);
 
-    const { error: msgErr } = await supabase.from("messages").insert(messages);
-    results.messages = msgErr ? `Error: ${msgErr.message}` : `Created ${messages.length} messages`;
+    const { data: messages, error: messageError } = await supabase
+      .from("messages")
+      .upsert(messageRows, { onConflict: "message_id" })
+      .select("id, message_id");
 
-    // ══════════════════════════════════════════════════════════
-    // 6. FHIR RESOURCES (columns: id, resource_type, resource_id, version, resource, source_message_id, created_at, updated_at)
-    // ══════════════════════════════════════════════════════════
-    const fhirResources = [
-      { id: uuid(), resource_type: "Patient", resource_id: "pat-001", version: 1, resource: { resourceType: "Patient", id: "pat-001", identifier: [{ system: "http://hospital-a.org/mrn", value: "MRN12345" }], name: [{ use: "official", family: "Doe", given: ["Jane", "Marie"] }], gender: "female", birthDate: "1985-03-15", address: [{ line: ["123 Main St"], city: "Springfield", state: "IL", postalCode: "62701" }], maritalStatus: { coding: [{ code: "M", display: "Married" }] } }, source_message_id: msgIds[0], created_at: hoursAgo(5), updated_at: hoursAgo(5) },
-      { id: uuid(), resource_type: "Patient", resource_id: "pat-002", version: 1, resource: { resourceType: "Patient", id: "pat-002", identifier: [{ system: "http://hospital-a.org/mrn", value: "MRN67890" }], name: [{ use: "official", family: "Smith", given: ["Robert", "James"] }], gender: "male", birthDate: "1972-08-22", address: [{ line: ["456 Oak Ave"], city: "Springfield", state: "IL", postalCode: "62702" }] }, source_message_id: msgIds[1], created_at: hoursAgo(3), updated_at: hoursAgo(3) },
-      { id: uuid(), resource_type: "Patient", resource_id: "pat-003", version: 1, resource: { resourceType: "Patient", id: "pat-003", identifier: [{ system: "http://hospital-a.org/mrn", value: "MRN11223" }], name: [{ use: "official", family: "Johnson", given: ["Emily"] }], gender: "female", birthDate: "1990-11-04" }, source_message_id: msgIds[10], created_at: hoursAgo(1), updated_at: hoursAgo(1) },
-      { id: uuid(), resource_type: "Encounter", resource_id: "enc-001", version: 1, resource: { resourceType: "Encounter", id: "enc-001", status: "in-progress", class: { code: "IMP", display: "inpatient" }, subject: { reference: "Patient/pat-001" }, period: { start: hoursAgo(5) }, location: [{ location: { display: "West Wing, Room W101" } }], reasonCode: [{ coding: [{ system: "http://hl7.org/fhir/sid/icd-10", code: "J18.9", display: "Pneumonia" }] }] }, source_message_id: msgIds[0], created_at: hoursAgo(5), updated_at: hoursAgo(5) },
-      { id: uuid(), resource_type: "Encounter", resource_id: "enc-002", version: 1, resource: { resourceType: "Encounter", id: "enc-002", status: "in-progress", class: { code: "IMP", display: "inpatient" }, subject: { reference: "Patient/pat-002" }, period: { start: hoursAgo(3) }, location: [{ location: { display: "East Wing, Room E205" } }] }, source_message_id: msgIds[1], created_at: hoursAgo(3), updated_at: hoursAgo(3) },
-      { id: uuid(), resource_type: "Observation", resource_id: "obs-wbc-001", version: 1, resource: { resourceType: "Observation", id: "obs-wbc-001", status: "final", code: { coding: [{ system: "http://loinc.org", code: "6690-2", display: "WBC" }], text: "White Blood Cell Count" }, subject: { reference: "Patient/pat-001" }, valueQuantity: { value: 11.5, unit: "10*3/uL" }, referenceRange: [{ low: { value: 4.5 }, high: { value: 11.0 } }], interpretation: [{ coding: [{ code: "H", display: "High" }] }] }, source_message_id: msgIds[2], created_at: hoursAgo(4), updated_at: hoursAgo(4) },
-      { id: uuid(), resource_type: "Observation", resource_id: "obs-hgb-001", version: 1, resource: { resourceType: "Observation", id: "obs-hgb-001", status: "final", code: { coding: [{ system: "http://loinc.org", code: "718-7", display: "Hemoglobin" }], text: "Hemoglobin" }, subject: { reference: "Patient/pat-001" }, valueQuantity: { value: 12.8, unit: "g/dL" }, referenceRange: [{ low: { value: 12.0 }, high: { value: 16.0 } }] }, source_message_id: msgIds[2], created_at: hoursAgo(4), updated_at: hoursAgo(4) },
-      { id: uuid(), resource_type: "Observation", resource_id: "obs-glu-001", version: 1, resource: { resourceType: "Observation", id: "obs-glu-001", status: "final", code: { coding: [{ system: "http://loinc.org", code: "2345-7", display: "Glucose" }], text: "Glucose" }, subject: { reference: "Patient/pat-001" }, valueQuantity: { value: 98, unit: "mg/dL" }, referenceRange: [{ low: { value: 70 }, high: { value: 100 } }] }, source_message_id: msgIds[3], created_at: hoursAgo(4), updated_at: hoursAgo(4) },
-      { id: uuid(), resource_type: "DiagnosticReport", resource_id: "diag-001", version: 1, resource: { resourceType: "DiagnosticReport", id: "diag-001", status: "final", code: { coding: [{ system: "http://loinc.org", code: "58410-2", display: "CBC panel" }], text: "Complete Blood Count" }, subject: { reference: "Patient/pat-001" }, result: [{ reference: "Observation/obs-wbc-001" }, { reference: "Observation/obs-hgb-001" }], conclusion: "WBC slightly elevated. All other values normal." }, source_message_id: msgIds[2], created_at: hoursAgo(4), updated_at: hoursAgo(4) },
-      { id: uuid(), resource_type: "Condition", resource_id: "cond-001", version: 1, resource: { resourceType: "Condition", id: "cond-001", clinicalStatus: { coding: [{ code: "active" }] }, code: { coding: [{ system: "http://hl7.org/fhir/sid/icd-10", code: "J18.9", display: "Pneumonia, unspecified" }] }, subject: { reference: "Patient/pat-001" }, onsetDateTime: hoursAgo(5) }, source_message_id: msgIds[0], created_at: hoursAgo(5), updated_at: hoursAgo(5) },
-      { id: uuid(), resource_type: "AllergyIntolerance", resource_id: "allergy-001", version: 1, resource: { resourceType: "AllergyIntolerance", id: "allergy-001", clinicalStatus: { coding: [{ code: "active" }] }, type: "allergy", category: ["medication"], criticality: "high", code: { coding: [{ system: "http://www.nlm.nih.gov/research/umls/rxnorm", code: "PCN", display: "Penicillin" }] }, patient: { reference: "Patient/pat-001" }, reaction: [{ manifestation: [{ coding: [{ display: "Anaphylaxis" }] }], severity: "severe" }] }, source_message_id: msgIds[0], created_at: hoursAgo(5), updated_at: hoursAgo(5) },
-      { id: uuid(), resource_type: "ServiceRequest", resource_id: "order-001", version: 1, resource: { resourceType: "ServiceRequest", id: "order-001", status: "active", intent: "order", priority: "stat", code: { coding: [{ code: "CBC", display: "Complete Blood Count" }] }, subject: { reference: "Patient/pat-001" }, requester: { display: "Dr. Robert Jones" }, authoredOn: hoursAgo(6) }, source_message_id: msgIds[5], created_at: hoursAgo(6), updated_at: hoursAgo(6) },
+    if (messageError || !messages) {
+      return NextResponse.json({ error: messageError?.message || "Failed to seed messages." }, { status: 500 });
+    }
+    results.messages = `Upserted ${messages.length} messages`;
+
+    const messageMap = new Map(messages.map((message) => [message.message_id, message.id]));
+
+    const fhirRows = [
+      {
+        resource_type: "Patient",
+        resource_id: "pat-seed-1",
+        version: 1,
+        resource_data: {
+          resourceType: "Patient",
+          id: "pat-seed-1",
+          active: true,
+          name: [{ family: "Doe", given: ["Jane"] }],
+          gender: "female",
+          birthDate: "1985-03-15",
+          meta: { versionId: "1", lastUpdated: hoursAgo(1) },
+        },
+        source_message_id: messageMap.get("MSG-SEED-002") ?? null,
+      },
+      {
+        resource_type: "Encounter",
+        resource_id: "enc-seed-1",
+        version: 1,
+        resource_data: {
+          resourceType: "Encounter",
+          id: "enc-seed-1",
+          status: "in-progress",
+          subject: { reference: "Patient/pat-seed-1" },
+          meta: { versionId: "1", lastUpdated: hoursAgo(2) },
+        },
+        source_message_id: messageMap.get("MSG-SEED-001") ?? null,
+      },
     ];
 
-    const { error: fhirErr } = await supabase.from("fhir_resources").insert(fhirResources);
-    results.fhir_resources = fhirErr ? `Error: ${fhirErr.message}` : `Created ${fhirResources.length} FHIR resources`;
+    const { error: fhirError } = await supabase
+      .from("fhir_resources")
+      .upsert(fhirRows, { onConflict: "resource_type,resource_id" });
 
-    // ══════════════════════════════════════════════════════════
-    // 7. EVENTS (Audit Log)
-    // ══════════════════════════════════════════════════════════
-    const events = [
-      { id: uuid(), level: "INFO", event_name: "system.startup", description: "HealthBridge Integration Engine started successfully", attributes: { version: "1.0.0", environment: "production" }, created_at: hoursAgo(48) },
-      { id: uuid(), level: "INFO", event_name: "channel.deploy", description: "Channel 'ADT Inbound Processor' deployed (revision 3)", attributes: { channel_id: CH_ADT, revision: 3 }, created_at: hoursAgo(47) },
-      { id: uuid(), level: "INFO", event_name: "channel.start", description: "Channel 'ADT Inbound Processor' started", attributes: { channel_id: CH_ADT }, created_at: hoursAgo(47) },
-      { id: uuid(), level: "INFO", event_name: "channel.deploy", description: "Channel 'Lab Results Router' deployed (revision 5)", attributes: { channel_id: CH_LAB, revision: 5 }, created_at: hoursAgo(46) },
-      { id: uuid(), level: "INFO", event_name: "channel.start", description: "Channel 'Lab Results Router' started", attributes: { channel_id: CH_LAB }, created_at: hoursAgo(46) },
-      { id: uuid(), level: "INFO", event_name: "channel.deploy", description: "Channel 'Order Dispatch' deployed (revision 2)", attributes: { channel_id: CH_ORDERS }, created_at: hoursAgo(45) },
-      { id: uuid(), level: "INFO", event_name: "channel.start", description: "Channel 'Order Dispatch' started", attributes: { channel_id: CH_ORDERS }, created_at: hoursAgo(45) },
-      { id: uuid(), level: "INFO", event_name: "channel.deploy", description: "Channel 'FHIR R4 Gateway' deployed (revision 1)", attributes: { channel_id: CH_FHIR }, created_at: hoursAgo(44) },
-      { id: uuid(), level: "INFO", event_name: "channel.start", description: "Channel 'FHIR R4 Gateway' started", attributes: { channel_id: CH_FHIR }, created_at: hoursAgo(44) },
-      { id: uuid(), level: "WARNING", event_name: "channel.queue_threshold", description: "Queue depth exceeded threshold (25) for 'FHIR Repository' on 'ADT Inbound Processor'", attributes: { channel_id: CH_ADT, queue_depth: 28, threshold: 25 }, created_at: hoursAgo(36) },
-      { id: uuid(), level: "ERROR", event_name: "connector.send_error", description: "Failed to send to 'Provider Portal Webhook' — HTTP 503 Service Unavailable", attributes: { channel_id: CH_LAB, http_status: 503 }, created_at: hoursAgo(24) },
-      { id: uuid(), level: "INFO", event_name: "connector.recovery", description: "Destination 'Provider Portal Webhook' recovered — connection restored", attributes: { channel_id: CH_LAB }, created_at: hoursAgo(23) },
-      { id: uuid(), level: "WARNING", event_name: "message.retry_exhausted", description: "Message retry exhausted for 'Lab Information System' — moved to error queue", attributes: { channel_id: CH_ORDERS, attempts: 5 }, created_at: hoursAgo(18) },
-      { id: uuid(), level: "INFO", event_name: "system.pruner", description: "Data pruner completed: removed 142 messages older than 30 days", attributes: { messages_pruned: 142, duration_ms: 1250 }, created_at: hoursAgo(12) },
-      { id: uuid(), level: "ERROR", event_name: "connector.connection_lost", description: "Lost TCP connection to 'Clinical Database' on 'ADT Inbound Processor'", attributes: { channel_id: CH_ADT, error: "Connection reset by peer" }, created_at: hoursAgo(8) },
-      { id: uuid(), level: "INFO", event_name: "connector.reconnected", description: "Reconnected to 'Clinical Database' on 'ADT Inbound Processor'", attributes: { channel_id: CH_ADT, downtime_seconds: 45 }, created_at: hoursAgo(8) },
-      { id: uuid(), level: "INFO", event_name: "channel.stats_snapshot", description: "Hourly statistics snapshot saved", attributes: { total_received: 8186, total_sent: 7707, total_errors: 18 }, created_at: hoursAgo(1) },
-      { id: uuid(), level: "WARNING", event_name: "system.memory", description: "Heap usage at 78% — consider increasing max heap size", attributes: { heap_used_mb: 780, heap_max_mb: 1024 }, created_at: minutesAgo(30) },
-      { id: uuid(), level: "INFO", event_name: "user.login", description: "User demo@healthbridge.io logged in", attributes: { ip_address: "192.168.1.100" }, created_at: minutesAgo(15) },
-      { id: uuid(), level: "INFO", event_name: "channel.message_processed", description: "Processed 50 messages in the last hour across all channels", attributes: { adt: 12, lab: 28, orders: 6, fhir: 4 }, created_at: minutesAgo(5) },
+    if (fhirError) {
+      return NextResponse.json({ error: fhirError.message }, { status: 500 });
+    }
+    results.fhir_resources = `Upserted ${fhirRows.length} resources`;
+
+    const transformationRows = [
+      {
+        transformation_id: "TRF-001",
+        name: "HL7v2 ADT to FHIR Patient",
+        description: "Maps ADT intake into a Patient resource envelope.",
+        language: "javascript",
+        script: 'function transform(message, maps) { return { resourceType: "Patient", id: maps.channelMap.patientId || "demo" }; }',
+        input_format: "HL7v2",
+        output_format: "FHIR_R4",
+        version: 1,
+        is_active: true,
+        test_result: "pass",
+      },
+      {
+        transformation_id: "TRF-002",
+        name: "ORU Result Normalizer",
+        description: "Normalizes ORU payloads before downstream distribution.",
+        language: "javascript",
+        script: 'function transform(message) { return { resourceType: "Observation", status: "final", payload: message }; }',
+        input_format: "HL7v2",
+        output_format: "FHIR_R4",
+        version: 1,
+        is_active: true,
+        test_result: "untested",
+      },
+      {
+        transformation_id: "TRF-003",
+        name: "JSON to HL7v2 Mapper",
+        description: "Builds an HL7-compatible envelope from JSON intake.",
+        language: "javascript",
+        script: 'function transform(message) { return "MSH|^~\\&|JSON|MEDFLOW|DEST|TARGET|" + new Date().toISOString(); }',
+        input_format: "JSON",
+        output_format: "HL7v2",
+        version: 1,
+        is_active: true,
+        test_result: "untested",
+      },
     ];
 
-    const { error: evtErr } = await supabase.from("events").insert(events);
-    results.events = evtErr ? `Error: ${evtErr.message}` : `Created ${events.length} events`;
+    const { data: transformations, error: transformationsError } = await supabase
+      .from("transformations")
+      .upsert(transformationRows, { onConflict: "transformation_id" })
+      .select("id, transformation_id");
 
-    // ══════════════════════════════════════════════════════════
-    // 8. QUEUE ENTRIES
-    // ══════════════════════════════════════════════════════════
-    const queueEntries = [
-      { id: uuid(), message_id: msgIds[7], channel_id: CH_FHIR, destination_id: DEST_FHIR_HTTP, status: "failed", attempts: 5, max_attempts: 5, next_retry_at: null, error_log: [{ message: "HTTP 503 Service Unavailable", timestamp: hoursAgo(18) }, { message: "Connection timeout after 15000ms", timestamp: hoursAgo(14) }], created_at: hoursAgo(20), completed_at: null },
-      { id: uuid(), message_id: msgIds[17], channel_id: CH_FHIR, destination_id: DEST_FHIR_HTTP, status: "failed", attempts: 3, max_attempts: 10, next_retry_at: minutesAgo(-30), error_log: [{ message: "HTTP 502 Bad Gateway", timestamp: hoursAgo(2) }], created_at: hoursAgo(3), completed_at: null },
-      { id: uuid(), message_id: msgIds[27], channel_id: CH_ORDERS, destination_id: DEST_ORDERS_LAB, status: "pending", attempts: 1, max_attempts: 5, next_retry_at: minutesAgo(-5), error_log: [{ message: "MLLP send timeout", timestamp: minutesAgo(10) }], created_at: minutesAgo(15), completed_at: null },
-      { id: uuid(), message_id: msgIds[37], channel_id: CH_ADT, destination_id: DEST_ADT_DB, status: "pending", attempts: 0, max_attempts: 3, next_retry_at: minutesAgo(-1), error_log: null, created_at: minutesAgo(3), completed_at: null },
-      { id: uuid(), message_id: msgIds[0], channel_id: CH_ADT, destination_id: DEST_ADT_FHIR, status: "completed", attempts: 2, max_attempts: 5, next_retry_at: null, error_log: [{ message: "HTTP 429 Too Many Requests", timestamp: hoursAgo(10) }], created_at: hoursAgo(11), completed_at: hoursAgo(10) },
-      { id: uuid(), message_id: msgIds[2], channel_id: CH_LAB, destination_id: DEST_LAB_DB, status: "completed", attempts: 1, max_attempts: 3, next_retry_at: null, error_log: null, created_at: hoursAgo(8), completed_at: hoursAgo(8) },
-      { id: uuid(), message_id: msgIds[5], channel_id: CH_ORDERS, destination_id: DEST_ORDERS_LAB, status: "completed", attempts: 3, max_attempts: 5, next_retry_at: null, error_log: [{ message: "MLLP timeout", timestamp: hoursAgo(6) }], created_at: hoursAgo(7), completed_at: hoursAgo(5) },
-      { id: uuid(), message_id: msgIds[10], channel_id: CH_ADT, destination_id: DEST_ADT_DB, status: "completed", attempts: 1, max_attempts: 3, next_retry_at: null, error_log: null, created_at: hoursAgo(4), completed_at: hoursAgo(4) },
+    if (transformationsError || !transformations) {
+      return NextResponse.json({ error: transformationsError?.message || "Failed to seed transformations." }, { status: 500 });
+    }
+    results.transformations = `Upserted ${transformations.length} transformations`;
+
+    const transformationMap = new Map(transformations.map((row) => [row.transformation_id, row.id]));
+
+    const validationRuleRows = [
+      {
+        rule_id: "VAL-001",
+        name: "HL7v2 Required Fields",
+        description: "Ensures key MSH and PID fields are present.",
+        message_format: "HL7v2",
+        rule_type: "required_fields",
+        rule_definition: { required: ["MSH.3", "MSH.4", "MSH.9", "PID.3"] },
+        is_active: true,
+        severity: "error",
+      },
+      {
+        rule_id: "VAL-002",
+        name: "FHIR Patient Schema",
+        description: "Validates minimum Patient identity structure.",
+        message_format: "FHIR_R4",
+        rule_type: "schema",
+        rule_definition: { resourceType: "Patient", required: ["id", "name"] },
+        is_active: true,
+        severity: "error",
+      },
+      {
+        rule_id: "VAL-003",
+        name: "Message Size Guardrail",
+        description: "Warns when payload size approaches platform limits.",
+        message_format: "HL7v2",
+        rule_type: "custom",
+        rule_definition: { max_size_bytes: 102400 },
+        is_active: true,
+        severity: "warning",
+      },
     ];
 
-    const { error: queueErr } = await supabase.from("queue_entries").insert(queueEntries);
-    results.queue_entries = queueErr ? `Error: ${queueErr.message}` : `Created ${queueEntries.length} queue entries`;
+    const { data: validationRules, error: validationRulesError } = await supabase
+      .from("validation_rules")
+      .upsert(validationRuleRows, { onConflict: "rule_id" })
+      .select("id, rule_id");
+
+    if (validationRulesError || !validationRules) {
+      return NextResponse.json({ error: validationRulesError?.message || "Failed to seed validation rules." }, { status: 500 });
+    }
+    results.validation_rules = `Upserted ${validationRules.length} validation rules`;
+
+    const validationRuleMap = new Map(validationRules.map((row) => [row.rule_id, row.id]));
+
+    await supabase
+      .from("channels")
+      .update({
+        transformation_id: transformationMap.get("TRF-001") ?? null,
+        validation_rule_id: validationRuleMap.get("VAL-001") ?? null,
+      })
+      .eq("channel_id", "CH-001");
+
+    await supabase
+      .from("channels")
+      .update({
+        transformation_id: transformationMap.get("TRF-002") ?? null,
+        validation_rule_id: validationRuleMap.get("VAL-002") ?? null,
+      })
+      .eq("channel_id", "CH-003");
+
+    const routingRuleRows = [
+      {
+        rule_id: "RR-001",
+        name: "Route ADT Intake to FHIR Sync",
+        description: "Routes admission traffic into the FHIR sync lane.",
+        channel_id: channelMap.get("CH-001")?.id,
+        priority: 1,
+        condition_type: "message_type",
+        condition_field: "MSH.9",
+        condition_operator: "equals",
+        condition_value: "ADT^A01",
+        action: "route_to",
+        destination_channel_id: channelMap.get("CH-003")?.id ?? null,
+        is_active: true,
+      },
+      {
+        rule_id: "RR-002",
+        name: "Filter Test Traffic",
+        description: "Stops test-mode traffic from reaching production destinations.",
+        channel_id: channelMap.get("CH-001")?.id,
+        priority: 2,
+        condition_type: "field_value",
+        condition_field: "MSH.11",
+        condition_operator: "equals",
+        condition_value: "T",
+        action: "filter",
+        destination_channel_id: null,
+        is_active: true,
+      },
+      {
+        rule_id: "RR-003",
+        name: "Archive Failed Pharmacy Retries",
+        description: "Archives pharmacy traffic after repeated downstream failures.",
+        channel_id: channelMap.get("CH-006")?.id,
+        priority: 1,
+        condition_type: "source",
+        condition_field: "destination_system",
+        condition_operator: "contains",
+        condition_value: "Pharmacy",
+        action: "archive",
+        destination_channel_id: null,
+        is_active: true,
+      },
+    ].filter((row) => row.channel_id);
+
+    const { data: routingRules, error: routingRulesError } = await supabase
+      .from("routing_rules")
+      .upsert(routingRuleRows, { onConflict: "rule_id" })
+      .select("id, rule_id");
+
+    if (routingRulesError || !routingRules) {
+      return NextResponse.json({ error: routingRulesError?.message || "Failed to seed routing rules." }, { status: 500 });
+    }
+    results.routing_rules = `Upserted ${routingRules.length} routing rules`;
+
+    const alertRows = [
+      {
+        alert_id: "ALT-001",
+        name: "High Error Rate Alert",
+        description: "Warns operators when message failures exceed the allowed threshold.",
+        trigger_type: "error_rate",
+        threshold_value: 5,
+        threshold_operator: "gt",
+        notification_channel: "email",
+        notification_target: "admin@medflow.local",
+        cooldown_minutes: 15,
+        is_active: true,
+      },
+      {
+        alert_id: "ALT-002",
+        name: "High Latency Alert",
+        description: "Triggers when processing latency crosses the response budget.",
+        trigger_type: "latency",
+        threshold_value: 500,
+        threshold_operator: "gt",
+        notification_channel: "webhook",
+        notification_target: "https://hooks.medflow.local/ops",
+        cooldown_minutes: 10,
+        is_active: true,
+      },
+    ];
+
+    const { data: alerts, error: alertsError } = await supabase
+      .from("alerts")
+      .upsert(alertRows, { onConflict: "alert_id" })
+      .select("id, alert_id");
+
+    if (alertsError || !alerts) {
+      return NextResponse.json({ error: alertsError?.message || "Failed to seed alerts." }, { status: 500 });
+    }
+    results.alerts = `Upserted ${alerts.length} alerts`;
+
+    const alertHistoryRows = alerts
+      .filter((alert) => alert.alert_id === "ALT-001")
+      .map((alert) => ({
+        alert_id: alert.id,
+        triggered_at: minutesAgo(90),
+        trigger_value: 7.2,
+        message: "Seeded historical trigger for dashboard and alerts testing.",
+        notified: true,
+        notified_at: minutesAgo(89),
+      }));
+
+    if (alertHistoryRows.length > 0) {
+      const { error: alertHistoryError } = await supabase.from("alert_history").insert(alertHistoryRows);
+      results.alert_history = alertHistoryError ? `Skipped: ${alertHistoryError.message}` : `Inserted ${alertHistoryRows.length} alert history rows`;
+    }
+
+    const metricRows = [
+      {
+        recorded_at: hoursAgo(4),
+        messages_total: 842,
+        messages_success: 826,
+        messages_failed: 16,
+        avg_latency_ms: 67.1,
+        throughput_per_min: 2.8,
+        cpu_usage_pct: 34.9,
+        memory_usage_pct: 48.5,
+        active_channels: 3,
+      },
+      {
+        recorded_at: hoursAgo(2),
+        messages_total: 913,
+        messages_success: 901,
+        messages_failed: 12,
+        avg_latency_ms: 63.4,
+        throughput_per_min: 3.1,
+        cpu_usage_pct: 37.2,
+        memory_usage_pct: 50.1,
+        active_channels: 3,
+      },
+      {
+        recorded_at: minutesAgo(20),
+        messages_total: 228,
+        messages_success: 221,
+        messages_failed: 7,
+        avg_latency_ms: 58.8,
+        throughput_per_min: 2.2,
+        cpu_usage_pct: 29.7,
+        memory_usage_pct: 44.8,
+        active_channels: 3,
+      },
+    ];
+
+    const { error: metricsError } = await supabase.from("performance_metrics").insert(metricRows);
+    if (metricsError) {
+      results.performance_metrics = `Skipped: ${metricsError.message}`;
+    } else {
+      results.performance_metrics = `Inserted ${metricRows.length} metrics`;
+    }
+
+    const errorLogRows = [
+      {
+        message_id: messageMap.get("MSG-SEED-003") ?? null,
+        channel_id: channelMap.get("CH-006")?.id ?? null,
+        error_code: "SEED-NET-001",
+        error_type: "network",
+        error_message: "Connection refused after queued retry attempts.",
+        resolved: false,
+      },
+    ];
+
+    const { error: errorLogError } = await supabase.from("error_logs").insert(errorLogRows);
+    if (errorLogError) {
+      results.error_logs = `Skipped: ${errorLogError.message}`;
+    } else {
+      results.error_logs = `Inserted ${errorLogRows.length} error logs`;
+    }
+
+    const auditRows = [
+      {
+        action: "seed.runtime.messages",
+        entity_type: "seed",
+        entity_id: "api-seed-v2",
+        details: { seededBy: "api-seed-v2", channelCount: channels.length, messageCount: messages.length },
+      },
+    ];
+
+    const { error: auditError } = await supabase.from("audit_logs").insert(auditRows);
+    if (auditError) {
+      results.audit_logs = `Skipped: ${auditError.message}`;
+    } else {
+      results.audit_logs = `Inserted ${auditRows.length} audit logs`;
+    }
 
     return NextResponse.json({ success: true, results }, { status: 200 });
   } catch (err) {
-    return NextResponse.json({ success: false, error: String(err), results }, { status: 500 });
+    return NextResponse.json(
+      { success: false, error: err instanceof Error ? err.message : String(err), results },
+      { status: 500 },
+    );
   }
 }
+

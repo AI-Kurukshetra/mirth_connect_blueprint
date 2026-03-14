@@ -18,7 +18,7 @@ export async function GET(
     const { data: message, error } = await supabase
       .from("messages")
       .select("*")
-      .eq("id", messageId)
+      .or(`id.eq.${messageId},message_id.eq.${messageId}`)
       .single();
 
     if (error || !message) {

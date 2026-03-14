@@ -1,22 +1,11 @@
 import type { Metadata } from "next";
-import { IBM_Plex_Sans, JetBrains_Mono } from "next/font/google";
+
+import { AppProviders } from "@/components/providers/app-providers";
 import "./globals.css";
 
-const ibmPlex = IBM_Plex_Sans({
-  variable: "--font-ibm-plex",
-  subsets: ["latin"],
-  weight: ["300", "400", "500", "600", "700"],
-});
-
-const jetbrains = JetBrains_Mono({
-  variable: "--font-jetbrains",
-  subsets: ["latin"],
-  weight: ["400", "500", "600", "700"],
-});
-
 export const metadata: Metadata = {
-  title: "HealthBridge — Healthcare Integration Engine",
-  description: "Enterprise healthcare integration engine for HL7, FHIR, and clinical data exchange",
+  title: "MedFlow | Healthcare Integration Command Center",
+  description: "MedFlow unifies HL7, FHIR, channel operations, message visibility, and connector monitoring in one operational surface.",
 };
 
 export default function RootLayout({
@@ -26,8 +15,8 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" className="dark">
-      <body className={`${ibmPlex.variable} ${jetbrains.variable} antialiased`}>
-        {children}
+      <body className="antialiased">
+        <AppProviders>{children}</AppProviders>
       </body>
     </html>
   );
