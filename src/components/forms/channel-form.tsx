@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useRouter } from "next/navigation";
@@ -6,7 +6,7 @@ import { useState, useTransition } from "react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 
-import { createChannelAction } from "@/lib/actions/channels";
+import { createChannelAction, updateChannelAction } from "@/lib/actions/channels";
 import { channelSchema, type ChannelInput } from "@/lib/validations/channel";
 import { useUiStore } from "@/store/ui-store";
 import { Button } from "@/components/ui/button";
@@ -14,7 +14,25 @@ import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 
-export function ChannelForm() {
+interface ChannelFormProps {
+  mode?: "create" | "edit";
+  currentChannelId?: string;
+  initialValues?: ChannelInput;
+}
+
+const defaultValues: ChannelInput = {
+  channelId: "CH-009",
+  name: "",
+  description: "",
+  sourceType: "MLLP",
+  destinationType: "REST",
+  messageFormat: "HL7v2",
+  retryCount: 3,
+  retryInterval: 60,
+  status: "active",
+};
+
+export function ChannelForm({ mode = "create", currentChannelId, initialValues }: ChannelFormProps) {
   const router = useRouter();
   const startLoading = useUiStore((state) => state.startLoading);
   const stopLoading = useUiStore((state) => state.stopLoading);
@@ -25,22 +43,19 @@ export function ChannelForm() {
     handleSubmit,
     formState: { errors },
   } = useForm<ChannelInput>({
-    defaultValues: {
-      channelId: "CH-009",
-      sourceType: "MLLP",
-      destinationType: "REST",
-      messageFormat: "HL7v2",
-      retryCount: 3,
-    },
+    defaultValues: initialValues ?? defaultValues,
     resolver: zodResolver(channelSchema),
   });
 
   const onSubmit = handleSubmit((values) => {
     setServerMessage(null);
     startTransition(async () => {
-      startLoading("Provisioning integration lane...");
+      startLoading(mode === "create" ? "Provisioning integration lane..." : "Updating integration lane...");
       try {
-        const result = await createChannelAction(values);
+        const result = mode === "edit" && currentChannelId
+          ? await updateChannelAction(currentChannelId, values)
+          : await createChannelAction(values);
+
         setServerMessage(result.message);
         if (!result.success) {
           toast.error(result.message);
@@ -48,6 +63,7 @@ export function ChannelForm() {
         }
         toast.success(result.message);
         router.push(result.redirectTo ?? "/channels");
+        router.refresh();
       } finally {
         stopLoading();
       }
@@ -75,7 +91,7 @@ export function ChannelForm() {
         {errors.description ? <p className="text-sm text-alert">{errors.description.message}</p> : null}
       </div>
 
-      <div className="grid gap-4 md:grid-cols-4">
+      <div className="grid gap-4 md:grid-cols-5">
         <div className="space-y-2">
           <label className="text-sm font-semibold text-ink" htmlFor="sourceType">Source</label>
           <Select aria-label="Source type" id="sourceType" {...register("sourceType")}>
@@ -109,15 +125,31 @@ export function ChannelForm() {
           </Select>
         </div>
         <div className="space-y-2">
-          <label className="text-sm font-semibold text-ink" htmlFor="retryCount">Retry count</label>
+          <label className="text-sm font-semibold text-ink" htmlFor="retryCount">Retries</label>
           <Input aria-label="Retry count" id="retryCount" type="number" {...register("retryCount", { valueAsNumber: true })} />
           {errors.retryCount ? <p className="text-sm text-alert">{errors.retryCount.message}</p> : null}
         </div>
+        <div className="space-y-2">
+          <label className="text-sm font-semibold text-ink" htmlFor="retryInterval">Retry interval</label>
+          <Input aria-label="Retry interval" id="retryInterval" type="number" {...register("retryInterval", { valueAsNumber: true })} />
+          {errors.retryInterval ? <p className="text-sm text-alert">{errors.retryInterval.message}</p> : null}
+        </div>
+      </div>
+
+      <div className="space-y-2 max-w-xs">
+        <label className="text-sm font-semibold text-ink" htmlFor="status">Status</label>
+        <Select aria-label="Channel status" id="status" {...register("status")}>
+          <option value="active">Active</option>
+          <option value="paused">Paused</option>
+          <option value="inactive">Inactive</option>
+          <option value="error">Error</option>
+        </Select>
       </div>
 
       {serverMessage ? <p className="text-sm text-muted">{serverMessage}</p> : null}
-      <Button aria-label="Create channel" loading={isPending} loadingText="Creating channel..." type="submit">Create channel</Button>
+      <Button aria-label={mode === "create" ? "Create channel" : "Update channel"} loading={isPending} loadingText={mode === "create" ? "Creating channel..." : "Updating channel..."} type="submit">
+        {mode === "create" ? "Create channel" : "Save changes"}
+      </Button>
     </form>
   );
 }
-

@@ -1,4 +1,4 @@
-import { z } from "zod";
+﻿import { z } from "zod";
 
 export const channelSchema = z.object({
   channelId: z.string().min(5, "Channel ID is required."),
@@ -8,7 +8,8 @@ export const channelSchema = z.object({
   destinationType: z.enum(["Database", "HTTP", "REST", "SFTP", "TCP", "MLLP"]),
   messageFormat: z.enum(["HL7v2", "HL7v3", "FHIR_R4", "FHIR_R5", "JSON", "XML"]),
   retryCount: z.number().int().min(0).max(10),
+  retryInterval: z.number().int().min(15).max(3600),
+  status: z.enum(["active", "inactive", "error", "paused"]),
 });
 
 export type ChannelInput = z.infer<typeof channelSchema>;
-
