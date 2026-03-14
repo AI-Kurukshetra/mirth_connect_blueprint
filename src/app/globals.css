@@ -1,0 +1,97 @@
+@import "tailwindcss";
+
+:root {
+  --background: #f5efe5;
+  --foreground: #13212a;
+  --ink: #11202a;
+  --muted: #5f6d76;
+  --line: rgba(17, 32, 42, 0.12);
+  --line-strong: rgba(17, 32, 42, 0.24);
+  --panel: rgba(255, 255, 255, 0.74);
+  --panel-solid: #fbf7f1;
+  --teal: #0f6d69;
+  --mint: #2fa98d;
+  --alert: #ff7f4d;
+  --gold: #bf8d2a;
+  --font-body: 'Segoe UI', 'Trebuchet MS', sans-serif;
+  --font-display: 'Palatino Linotype', 'Book Antiqua', Georgia, serif;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-ink: var(--ink);
+  --color-muted: var(--muted);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-panel: var(--panel);
+  --color-panel-solid: var(--panel-solid);
+  --color-teal: var(--teal);
+  --color-mint: var(--mint);
+  --color-alert: var(--alert);
+  --color-gold: var(--gold);
+  --font-sans: var(--font-body);
+  --font-display: var(--font-display);
+}
+
+* {
+  border-color: var(--line);
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at top left, rgba(47, 169, 141, 0.14), transparent 28%),
+    radial-gradient(circle at top right, rgba(255, 127, 77, 0.12), transparent 24%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.42), transparent 18%),
+    var(--background);
+  color: var(--foreground);
+  font-family: var(--font-body), sans-serif;
+}
+
+::selection {
+  background: rgba(47, 169, 141, 0.22);
+}
+
+button,
+a {
+  transition:
+    transform 180ms ease,
+    background-color 180ms ease,
+    border-color 180ms ease,
+    color 180ms ease,
+    box-shadow 180ms ease;
+}
+
+.app-grid {
+  background-image:
+    linear-gradient(rgba(17, 32, 42, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(17, 32, 42, 0.035) 1px, transparent 1px);
+  background-size: 38px 38px;
+}
+
+.glass {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.84), rgba(255, 255, 255, 0.64));
+  backdrop-filter: blur(16px);
+}
+
+.display-face {
+  font-family: var(--font-display), serif;
+  letter-spacing: -0.04em;
+}
+
+.page-loader-shimmer {
+  background: linear-gradient(90deg, rgba(255,255,255,0.08) 0%, rgba(17,32,42,0.06) 50%, rgba(255,255,255,0.08) 100%);
+  background-size: 200% 100%;
+  animation: shimmer 1.6s linear infinite;
+}
+
+@keyframes shimmer {
+  from { background-position: 200% 0; }
+  to { background-position: -200% 0; }
+}
+
